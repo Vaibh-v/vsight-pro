@@ -1,167 +1,250 @@
 // lib/google.ts
-import type { NextApiRequest } from "next";
+
+// IMPORTANT: do NOT re-declare NextApiRequest anywhere else.
+// Some repos define a global type alias; importing it here can
+// cause “Duplicate identifier 'NextApiRequest'” depending on tsconfig.
+// To avoid that entirely we keep our signature permissive and don’t
+// import the type at all.
+
 import { getToken } from "next-auth/jwt";
 
-/** Get Google access token from NextAuth session (server-side API routes). */
-export async function getAccessToken(req: NextApiRequest): Promise<string> {
-  const token: any = await getToken({ req });
-  const accessToken: string | undefined =
-    token?.access_token ?? token?.accessToken ?? token?.access?.token;
-  if (!accessToken) throw new Error("No Google access token on session");
-  return accessToken;
+/**
+ * Accepts either:
+ *  - a Next.js API req object (we’ll extract the Google access_token), or
+ *  - a raw access token string (useful for internal calls)
+ * Returns the OAuth access token or null.
+ */
+export async function getAccessToken(reqOrToken: any): Promise<string | null> {
+  if (!reqOrToken) return null;
+  if (typeof reqOrToken === "string") return reqOrToken;
+
+  // Treat as NextApiRequest
+  try {
+    const token = await getToken({ req: reqOrToken });
+    return (token as any)?.access_token ?? null;
+  } catch {
+    return null;
+  }
 }
 
-async function googleFetch<T>(
-  accessToken: string,
-  url: string,
-  init?: RequestInit
-): Promise<T> {
+/** Helper for Google REST calls with bearer token. */
+async function gFetch<T>(url: string, accessToken: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(url, {
     ...init,
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
-      ...(init?.headers || {}),
+      ...(init.headers || {}),
     },
-    cache: "no-store",
   });
-  const text = await res.text();
   if (!res.ok) {
-    try {
-      const parsed = JSON.parse(text);
-      throw new Error(
-        parsed?.error?.message || parsed?.error_description || text
-      );
-    } catch {
-      throw new Error(text || `Google request failed: ${res.status}`);
-    }
+    const text = await res.text().catch(() => "");
+    throw new Error(`Google API ${res.status} ${res.statusText}: ${text || url}`);
   }
-  return text ? (JSON.parse(text) as T) : ({} as T);
+  return (await res.json()) as T;
 }
 
-/** GA4 runReport (Analytics Data API) */
+/* =========================
+   GA4 – list properties
+   ========================= */
+
+/**
+ * Lists GA4 properties visible to the signed-in user via the
+ * Analytics Admin API accountSummaries endpoint.
+ * Scope required: https://www.googleapis.com/auth/analytics.readonly (sensitive)
+ */
+export async function gaListProperties(reqOrToken: any) {
+  const accessToken = await getAccessToken(reqOrToken);
+  if (!accessToken) throw new Error("No Google access token");
+
+  type AccountSummariesResponse = {
+    accountSummaries?: Array<{
+      name: string;           // "accounts/123"
+      account: string;        // "accounts/123"
+      displayName?: string;   // Account name
+      propertySummaries?: Array<{
+        property: string;     // "properties/376569938"
+        displayName?: string; // Property name
+      }>;
+    }>;
+  };
+
+  const data = await gFetch<AccountSummariesResponse>(
+    "https://analyticsadmin.googleapis.com/v1beta/accountSummaries",
+    accessToken
+  );
+
+  const properties =
+    (data.accountSummaries ?? []).flatMap((acct) =>
+      (acct.propertySummaries ?? []).map((p) => ({
+        property: p.property,
+        propertyId: p.property.replace("properties/", ""),
+        propertyName: p.displayName ?? p.property,
+        accountName: acct.displayName ?? acct.account,
+        account: acct.account.replace("accounts/", ""),
+      }))
+    );
+
+  return properties;
+}
+
+/* =========================
+   GA4 – runReport for traffic
+   ========================= */
+
+/**
+ * GA4 runReport example.
+ * metrics: sessions
+ * dimensions: date
+ * Scope required: https://www.googleapis.com/auth/analytics.readonly
+ */
 export async function gaRunReport(
-  req: NextApiRequest,
+  reqOrToken: any,
   propertyId: string,
-  body: Record<string, any>
-): Promise<any> {
-  const accessToken = await getAccessToken(req);
+  startDate: string,
+  endDate: string
+) {
+  const accessToken = await getAccessToken(reqOrToken);
+  if (!accessToken) throw new Error("No Google access token");
+
   const url = `https://analyticsdata.googleapis.com/v1beta/properties/${encodeURIComponent(
     propertyId
   )}:runReport`;
-  return googleFetch<any>(accessToken, url, {
+
+  const body = {
+    dateRanges: [{ startDate, endDate }],
+    dimensions: [{ name: "date" }],
+    metrics: [{ name: "sessions" }],
+  };
+
+  type RunReportResponse = {
+    rows?: Array<{
+      dimensionValues?: Array<{ value?: string }>;
+      metricValues?: Array<{ value?: string }>;
+    }>;
+  };
+
+  const data = await gFetch<RunReportResponse>(url, accessToken, {
     method: "POST",
     body: JSON.stringify(body),
   });
+
+  const points =
+    (data.rows ?? []).map((r) => ({
+      date: (r.dimensionValues?.[0]?.value ?? "").replace(/-/g, ""),
+      sessions: Number(r.metricValues?.[0]?.value ?? "0"),
+    })) || [];
+
+  return { points };
 }
 
-/** List GA4 properties via account summaries */
-export async function gaListProperties(req: NextApiRequest): Promise<
-  Array<{ propertyId: string; displayName: string; account: string }>
-> {
-  const accessToken = await getAccessToken(req);
-  const url =
-    "https://analyticsadmin.googleapis.com/v1beta/accountSummaries?pageSize=200";
-  const data = await googleFetch<any>(accessToken, url);
-  const out: Array<{ propertyId: string; displayName: string; account: string }> =
-    [];
-  for (const acc of data.accountSummaries ?? []) {
-    for (const prop of acc.propertySummaries ?? []) {
-      out.push({
-        propertyId: String(prop.property?.split("/").pop() ?? prop.property),
-        displayName: prop.displayName,
-        account: acc.account ?? "",
-      });
-    }
-  }
-  return out;
-}
+/* =========================
+   GSC – list verified sites
+   ========================= */
 
-/** List verified Search Console sites */
-export async function gscListSites(req: NextApiRequest): Promise<
-  Array<{ siteUrl: string; permissionLevel: string }>
-> {
-  const accessToken = await getAccessToken(req);
-  const url = "https://www.googleapis.com/webmasters/v3/sites";
-  const data = await googleFetch<any>(accessToken, url);
-  return (data.siteEntry ?? []).map((s: any) => ({
-    siteUrl: s.siteUrl,
-    permissionLevel: s.permissionLevel,
-  }));
-}
+/**
+ * Lists verified Search Console sites for the user.
+ * Scope required: https://www.googleapis.com/auth/webmasters.readonly (sensitive)
+ */
+export async function gscListSites(reqOrToken: any) {
+  const accessToken = await getAccessToken(reqOrToken);
+  if (!accessToken) throw new Error("No Google access token");
 
-/** Small helper for API routes */
-export function asJson(res: any, payload: any, status = 200) {
-  return res.status(status).json(payload);
-}
-// --- TEMP GBP stub so the build succeeds while GBP wiring is pending ---
-export function gbpStubInsights() {
-  // Fake “last 7 days” sample; replace with real Business Profile Insights later
-  const today = new Date();
-  const list = [];
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date(today.getTime() - i * 86400_000)
-      .toISOString()
-      .slice(0, 10);
-    list.push({
-      date: d,
-      viewsSearch: 200 + Math.floor(Math.random() * 80),
-      viewsMaps: 120 + Math.floor(Math.random() * 60),
-      calls: 5 + Math.floor(Math.random() * 6),
-      directions: 8 + Math.floor(Math.random() * 6),
-      websiteClicks: 10 + Math.floor(Math.random() * 10),
-      topQueries: ["plumber", "emergency plumber", "leak repair"],
-    });
-  }
-  return { rows: list };
-}
-import type { NextApiRequest } from "next";
-import { getToken } from "next-auth/jwt";
+  type SitesListResponse = {
+    siteEntry?: Array<{ siteUrl: string; permissionLevel: string }>;
+  };
 
-// 1) Pull the Google OAuth access token out of the NextAuth session/JWT
-export async function getAccessToken(
-  req: NextApiRequest
-): Promise<string | undefined> {
-  const token = (await getToken({ req })) as any;
-  return token?.access_token as string | undefined;
-}
-
-// 2) GA4: list accessible properties (via Account Summaries)
-export async function gaListProperties(
-  accessToken: string
-): Promise<any[]> {
-  const resp = await fetch(
-    "https://analyticsadmin.googleapis.com/v1beta/accountSummaries",
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-    }
+  const data = await gFetch<SitesListResponse>(
+    "https://www.googleapis.com/webmasters/v3/sites/list",
+    accessToken
   );
-  const json = await resp.json();
-  if (!resp.ok) {
-    throw new Error(json?.error?.message || "GA Admin API failed");
-  }
-  return json?.accountSummaries ?? [];
+
+  const sites =
+    (data.siteEntry ?? [])
+      .filter((s) => /^(sc-domain:|https?:)/.test(s.siteUrl)) // keep domain or URL properties
+      .map((s) => ({ siteUrl: s.siteUrl, permission: s.permissionLevel })) || [];
+
+  return sites;
 }
 
-// 3) (already added earlier) GBP stub — keep while wiring real API
-export function gbpStubInsights() {
-  const today = new Date();
-  const rows: any[] = [];
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date(today.getTime() - i * 86400_000)
-      .toISOString()
-      .slice(0, 10);
-    rows.push({
-      date: d,
-      viewsSearch: 200 + Math.floor(Math.random() * 80),
-      viewsMaps: 120 + Math.floor(Math.random() * 60),
-      calls: 5 + Math.floor(Math.random() * 6),
-      directions: 8 + Math.floor(Math.random() * 6),
-      websiteClicks: 10 + Math.floor(Math.random() * 10),
-      topQueries: ["plumber", "emergency plumber", "leak repair"],
-    });
-  }
+/* =========================
+   GSC – simple query example (keywords last 7 days)
+   ========================= */
+
+export async function gscQueryKeywords(
+  reqOrToken: any,
+  siteUrl: string,
+  startDate: string,
+  endDate: string
+) {
+  const accessToken = await getAccessToken(reqOrToken);
+  if (!accessToken) throw new Error("No Google access token");
+
+  const url = `https://searchconsole.googleapis.com/webmasters/v3/sites/${encodeURIComponent(
+    siteUrl
+  )}/searchAnalytics/query`;
+
+  const body = {
+    startDate,
+    endDate,
+    dimensions: ["query"],
+    rowLimit: 250,
+  };
+
+  type QueryResponse = {
+    rows?: Array<{
+      keys?: string[];
+      clicks?: number;
+      impressions?: number;
+      ctr?: number;
+      position?: number;
+    }>;
+  };
+
+  const data = await gFetch<QueryResponse>(url, accessToken, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+  const rows =
+    (data.rows ?? []).map((r) => ({
+      date: undefined,
+      query: r.keys?.[0] ?? "",
+      clicks: r.clicks ?? 0,
+      impressions: r.impressions ?? 0,
+      ctr: r.ctr ?? 0,
+      position: r.position ?? 0,
+      country: "ALL",
+    })) || [];
+
   return { rows };
+}
+
+/* =========================
+   GBP – safe stub (keeps builds green)
+   ========================= */
+
+export function gbpStubInsights() {
+  // last 7 days of simple mock data
+  const today = new Date();
+  const days = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(today);
+    d.setDate(today.getDate() - (6 - i));
+    return d.toISOString().slice(0, 10);
+  });
+
+  return {
+    rows: days.map((date) => ({
+      date,
+      viewsSearch: Math.round(180 + Math.random() * 120),
+      viewsMaps: Math.round(90 + Math.random() * 120),
+      calls: Math.round(3 + Math.random() * 6),
+      directions: Math.round(5 + Math.random() * 10),
+      websiteClicks: Math.round(10 + Math.random() * 10),
+      topQueries: ["plumber", "emergency plumber", "leak repair"].slice(
+        0,
+        1 + Math.floor(Math.random() * 3)
+      ),
+    })),
+  };
 }
