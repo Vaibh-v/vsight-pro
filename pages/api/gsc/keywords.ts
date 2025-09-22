@@ -1,40 +1,40 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { getAccessToken, gscQuery } from "@/lib/google";
+import { getAccessToken } from "@/lib/google";
 
-// returns top queries over a date range (GLOBAL “ALL” country)
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
-    const { siteUrl, start, end, rowLimit = "25" } = req.query;
-    if (!siteUrl || !start || !end) {
+    const { siteUrl, start, end } = (req.method === "POST" ? req.body : req.query) as any;
+    if (!siteUrl || !start || !end)
       return res.status(400).json({ error: "Missing siteUrl/start/end" });
-    }
-    const accessToken = await getAccessToken(req);
-    const data = await gscQuery(String(accessToken), String(siteUrl), {
+
+    const token = await getAccessToken(req);
+    const url = "https://www.googleapis.com/webmasters/v3/searchAnalytics/query";
+    const body = {
       startDate: String(start),
       endDate: String(end),
-      dimensions: ["query", "date", "country"],
-      rowLimit: Number(rowLimit),
-      aggregationType: "byProperty",
-      // You can add dimensionFilter if you later want regional filtering
+      dimensions: ["query"],
+      rowLimit: 50,
+    };
+
+    const resp = await fetch(`${url}?siteUrl=${encodeURIComponent(String(siteUrl))}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
     });
 
-    // flatten rows to match your UI
-    const rows =
-      data.rows?.map((r: any) => {
-        const [query, date, country] = r.keys ?? [];
-        return {
-          date,
-          query,
-          clicks: r.clicks ?? 0,
-          impressions: r.impressions ?? 0,
-          ctr: r.ctr ?? 0,
-          position: r.position ?? 0,
-          country: country ?? "ALL",
-        };
-      }) ?? [];
+    if (!resp.ok) {
+      const t = await resp.text();
+      throw new Error(t);
+    }
+    const data = await resp.json();
 
-    res.status(200).json({ rows });
+    res.status(200).json({ rows: data.rows ?? [] });
   } catch (e: any) {
-    res.status(400).json({ error: e?.message ?? "GSC keywords failed" });
+    res
+      .status(400)
+      .json({ error: e?.message || "GSC searchAnalytics.query failed" });
   }
 }
