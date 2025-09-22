@@ -115,3 +115,53 @@ export function gbpStubInsights() {
   }
   return { rows: list };
 }
+import type { NextApiRequest } from "next";
+import { getToken } from "next-auth/jwt";
+
+// 1) Pull the Google OAuth access token out of the NextAuth session/JWT
+export async function getAccessToken(
+  req: NextApiRequest
+): Promise<string | undefined> {
+  const token = (await getToken({ req })) as any;
+  return token?.access_token as string | undefined;
+}
+
+// 2) GA4: list accessible properties (via Account Summaries)
+export async function gaListProperties(
+  accessToken: string
+): Promise<any[]> {
+  const resp = await fetch(
+    "https://analyticsadmin.googleapis.com/v1beta/accountSummaries",
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+  const json = await resp.json();
+  if (!resp.ok) {
+    throw new Error(json?.error?.message || "GA Admin API failed");
+  }
+  return json?.accountSummaries ?? [];
+}
+
+// 3) (already added earlier) GBP stub — keep while wiring real API
+export function gbpStubInsights() {
+  const today = new Date();
+  const rows: any[] = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(today.getTime() - i * 86400_000)
+      .toISOString()
+      .slice(0, 10);
+    rows.push({
+      date: d,
+      viewsSearch: 200 + Math.floor(Math.random() * 80),
+      viewsMaps: 120 + Math.floor(Math.random() * 60),
+      calls: 5 + Math.floor(Math.random() * 6),
+      directions: 8 + Math.floor(Math.random() * 6),
+      websiteClicks: 10 + Math.floor(Math.random() * 10),
+      topQueries: ["plumber", "emergency plumber", "leak repair"],
+    });
+  }
+  return { rows };
+}
