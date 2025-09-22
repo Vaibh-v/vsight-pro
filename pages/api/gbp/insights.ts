@@ -1,3 +1,4 @@
+// pages/api/gbp/insights.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { gbpStubInsights } from "@/lib/google";
 
