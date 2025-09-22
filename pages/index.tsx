@@ -1,62 +1,199 @@
-import { useSession, signIn, signOut } from "next-auth/react";
-import { useState } from "react";
+// pages/index.tsx
+import { useState, useMemo } from "react";
+import type { NextPage } from "next";
+import Head from "next/head";
+import { signIn, signOut, useSession } from "next-auth/react";
 
-export default function Home() {
+type Json = Record<string, any>;
+
+function iso(d: Date) {
+  return d.toISOString().slice(0, 10);
+}
+
+const IndexPage: NextPage = () => {
   const { data: session, status } = useSession();
   const loading = status === "loading";
-  const [out, setOut] = useState<any>(null);
 
-  async function call(path: string, params: Record<string,string>) {
-    const qs = new URLSearchParams(params).toString();
-    const r = await fetch(`${path}?${qs}`);
-    const j = await r.json();
-    setOut(j);
+  // Default to last 7 days
+  const { startDefault, endDefault } = useMemo(() => {
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - 7);
+    return { startDefault: iso(start), endDefault: iso(end) };
+  }, []);
+
+  const [propertyId, setPropertyId] = useState<string>("");
+  const [siteUrl, setSiteUrl] = useState<string>("");
+  const [start, setStart] = useState<string>(startDefault);
+  const [end, setEnd] = useState<string>(endDefault);
+  const [output, setOutput] = useState<Json | null>(null);
+  const [busy, setBusy] = useState(false);
+  const authed = !!session;
+
+  async function fetchJson(url: string) {
+    setBusy(true);
+    setOutput(null);
+    try {
+      const r = await fetch(url);
+      const j = await r.json();
+      setOutput(j);
+    } catch (e: any) {
+      setOutput({ error: e?.message ?? "Request failed" });
+    } finally {
+      setBusy(false);
+    }
   }
 
-  const today = new Date();
-  const end = today.toISOString().slice(0,10);
-  const start = new Date(today.getTime() - 7*86400000).toISOString().slice(0,10);
+  const runGa = () => {
+    if (!propertyId) return setOutput({ error: "Enter GA4 propertyId" });
+    fetchJson(
+      `/api/ga/traffic?propertyId=${encodeURIComponent(
+        propertyId
+      )}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`
+    );
+  };
+
+  const runGsc = () => {
+    if (!siteUrl) return setOutput({ error: "Enter GSC siteUrl" });
+    fetchJson(
+      `/api/gsc/keywords?siteUrl=${encodeURIComponent(
+        siteUrl
+      )}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(
+        end
+      )}&rowLimit=25`
+    );
+  };
+
+  const runGbp = () => {
+    fetchJson(`/api/gbp/insights`);
+  };
 
   return (
-    <main style={{ maxWidth: 900, margin: "48px auto", fontFamily: "system-ui, sans-serif" }}>
-      <h1 style={{ fontSize: 28, fontWeight: 700 }}>VSight Pro — MVP Shell</h1>
-      <p style={{ color: "#666" }}>GA traffic • GSC keywords • GBP insights (stubbed until keys wired)</p>
+    <>
+      <Head>
+        <title>VSight Pro — MVP Shell</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+      </Head>
 
-      <section style={{ marginTop: 20, padding: 16, border: "1px solid #eee", borderRadius: 12 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 600 }}>Auth</h2>
-        {loading ? <p>Loading…</p> : session ? (
-          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-            <span>Signed in as <strong>{session.user?.email}</strong></span>
-            <button onClick={() => signOut()} style={{ padding: "6px 10px", borderRadius: 8, background: "#eee" }}>Sign out</button>
+      <main className="max-w-5xl mx-auto px-4 py-10">
+        <h1 className="text-2xl font-semibold">VSight Pro — MVP Shell</h1>
+        <p className="text-sm text-gray-600 mt-1">
+          GA traffic · GSC keywords · GBP insights
+        </p>
+
+        {/* Auth Card */}
+        <section className="mt-6 border rounded-lg p-4">
+          <h2 className="font-medium mb-2">Auth</h2>
+          {loading ? (
+            <p>Loading session…</p>
+          ) : authed ? (
+            <div className="flex items-center gap-3">
+              <span className="text-sm">
+                Signed in as{" "}
+                <b>{(session?.user as any)?.email ?? session?.user?.name}</b>
+              </span>
+              <button
+                className="px-3 py-1.5 rounded bg-gray-200 hover:bg-gray-300"
+                onClick={() => signOut()}
+              >
+                Sign out
+              </button>
+            </div>
+          ) : (
+            <button
+              className="px-3 py-1.5 rounded bg-black text-white hover:bg-gray-800"
+              onClick={() => signIn("google")}
+            >
+              Sign in with Google
+            </button>
+          )}
+        </section>
+
+        {/* Controls */}
+        <section className="mt-6 border rounded-lg p-4">
+          <h2 className="font-medium mb-3">Inputs</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <label className="block">
+              <span className="text-sm text-gray-700">GA4 Property ID</span>
+              <input
+                className="mt-1 w-full border rounded px-3 py-2"
+                placeholder="e.g. 123456789"
+                value={propertyId}
+                onChange={(e) => setPropertyId(e.target.value)}
+              />
+            </label>
+
+            <label className="block">
+              <span className="text-sm text-gray-700">GSC Site URL</span>
+              <input
+                className="mt-1 w-full border rounded px-3 py-2"
+                placeholder="e.g. https://example.com/"
+                value={siteUrl}
+                onChange={(e) => setSiteUrl(e.target.value)}
+              />
+            </label>
+
+            <label className="block">
+              <span className="text-sm text-gray-700">Start</span>
+              <input
+                type="date"
+                className="mt-1 w-full border rounded px-3 py-2"
+                value={start}
+                onChange={(e) => setStart(e.target.value)}
+              />
+            </label>
+
+            <label className="block">
+              <span className="text-sm text-gray-700">End</span>
+              <input
+                type="date"
+                className="mt-1 w-full border rounded px-3 py-2"
+                value={end}
+                onChange={(e) => setEnd(e.target.value)}
+              />
+            </label>
           </div>
-        ) : (
-          <button onClick={() => signIn("google")} style={{ padding: "6px 10px", borderRadius: 8, background: "#000", color: "#fff" }}>
-            Sign in with Google
-          </button>
-        )}
-      </section>
+        </section>
 
-      <section style={{ marginTop: 20, padding: 16, border: "1px solid #eee", borderRadius: 12 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 600 }}>Test Calls (last 7 days)</h2>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <button onClick={() => call("/api/ga/traffic", { start, end })} disabled={!session}
-                  style={{ padding: "8px 12px", borderRadius: 8, background: session ? "#0a7" : "#ccc", color: "#fff" }}>
-            GA: traffic
-          </button>
-          <button onClick={() => call("/api/gsc/keywords", { start, end, country: "ALL" })} disabled={!session}
-                  style={{ padding: "8px 12px", borderRadius: 8, background: session ? "#07a" : "#ccc", color: "#fff" }}>
-            GSC: keywords
-          </button>
-          <button onClick={() => call("/api/gbp/insights", { start, end })} disabled={!session}
-                  style={{ padding: "8px 12px", borderRadius: 8, background: session ? "#a70" : "#ccc", color: "#fff" }}>
-            GBP: insights
-          </button>
-        </div>
+        {/* Actions + Output */}
+        <section className="mt-6 border rounded-lg p-4">
+          <h2 className="font-medium mb-3">Test Calls (last 7 days)</h2>
 
-        <pre style={{ marginTop: 12, padding: 12, background: "#fafafa", borderRadius: 8, whiteSpace: "pre-wrap" }}>
-{out ? JSON.stringify(out, null, 2) : "← click a button"}
-        </pre>
-      </section>
-    </main>
+          <div className="flex flex-wrap gap-2 mb-3">
+            <button
+              onClick={runGa}
+              disabled={!authed || busy}
+              className="px-3 py-1.5 rounded bg-emerald-600 text-white disabled:opacity-50"
+            >
+              GA: traffic
+            </button>
+            <button
+              onClick={runGsc}
+              disabled={!authed || busy}
+              className="px-3 py-1.5 rounded bg-sky-600 text-white disabled:opacity-50"
+            >
+              GSC: keywords
+            </button>
+            <button
+              onClick={runGbp}
+              disabled={busy}
+              className="px-3 py-1.5 rounded bg-amber-600 text-white disabled:opacity-50"
+            >
+              GBP: insights
+            </button>
+          </div>
+
+          <pre className="min-h-[320px] whitespace-pre-wrap bg-gray-50 border rounded p-3 text-sm overflow-auto">
+            {busy
+              ? "Loading…"
+              : output
+              ? JSON.stringify(output, null, 2)
+              : "{ }"}
+          </pre>
+        </section>
+      </main>
+    </>
   );
-}
+};
+
+export default IndexPage;
