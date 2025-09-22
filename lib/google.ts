@@ -94,3 +94,24 @@ export async function gscListSites(req: NextApiRequest): Promise<
 export function asJson(res: any, payload: any, status = 200) {
   return res.status(status).json(payload);
 }
+// --- TEMP GBP stub so the build succeeds while GBP wiring is pending ---
+export function gbpStubInsights() {
+  // Fake “last 7 days” sample; replace with real Business Profile Insights later
+  const today = new Date();
+  const list = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(today.getTime() - i * 86400_000)
+      .toISOString()
+      .slice(0, 10);
+    list.push({
+      date: d,
+      viewsSearch: 200 + Math.floor(Math.random() * 80),
+      viewsMaps: 120 + Math.floor(Math.random() * 60),
+      calls: 5 + Math.floor(Math.random() * 6),
+      directions: 8 + Math.floor(Math.random() * 6),
+      websiteClicks: 10 + Math.floor(Math.random() * 10),
+      topQueries: ["plumber", "emergency plumber", "leak repair"],
+    });
+  }
+  return { rows: list };
+}
