@@ -1,199 +1,199 @@
 // pages/index.tsx
-import { useState, useMemo } from "react";
-import type { NextPage } from "next";
-import Head from "next/head";
+import React, { useEffect, useMemo, useState } from "react";
 import { signIn, signOut, useSession } from "next-auth/react";
 
-type Json = Record<string, any>;
+type GaProperty = { propertyId: string; displayName: string; account: string };
+type GscSite = { siteUrl: string; permissionLevel: string };
 
-function iso(d: Date) {
-  return d.toISOString().slice(0, 10);
-}
-
-const IndexPage: NextPage = () => {
+export default function Home() {
   const { data: session, status } = useSession();
   const loading = status === "loading";
 
-  // Default to last 7 days
-  const { startDefault, endDefault } = useMemo(() => {
-    const end = new Date();
-    const start = new Date();
-    start.setDate(end.getDate() - 7);
-    return { startDefault: iso(start), endDefault: iso(end) };
-  }, []);
+  const [gaProps, setGaProps] = useState<GaProperty[]>([]);
+  const [gscSites, setGscSites] = useState<GscSite[]>([]);
+  const [gaPropertyId, setGaPropertyId] = useState<string>("");
+  const [gscSiteUrl, setGscSiteUrl] = useState<string>("");
 
-  const [propertyId, setPropertyId] = useState<string>("");
-  const [siteUrl, setSiteUrl] = useState<string>("");
-  const [start, setStart] = useState<string>(startDefault);
-  const [end, setEnd] = useState<string>(endDefault);
-  const [output, setOutput] = useState<Json | null>(null);
+  const [start, setStart] = useState<string>(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 7);
+    return d.toISOString().slice(0, 10);
+  });
+  const [end, setEnd] = useState<string>(() => new Date().toISOString().slice(0, 10));
+
+  const [active, setActive] = useState<"ga" | "gsc" | "gbp" | null>(null);
+  const [output, setOutput] = useState<any>(null);
   const [busy, setBusy] = useState(false);
-  const authed = !!session;
 
-  async function fetchJson(url: string) {
+  // Load dropdown data after auth
+  useEffect(() => {
+    if (!session) return;
+
+    (async () => {
+      try {
+        const [ga, gsc] = await Promise.all([
+          fetch("/api/google/ga4/properties").then((r) => r.json()),
+          fetch("/api/google/gsc/sites").then((r) => r.json()),
+        ]);
+
+        if (Array.isArray(ga?.properties)) {
+          setGaProps(ga.properties);
+          if (ga.properties[0]?.propertyId) setGaPropertyId(ga.properties[0].propertyId);
+        }
+        if (Array.isArray(gsc?.sites)) {
+          setGscSites(gsc.sites);
+          if (gsc.sites[0]?.siteUrl) setGscSiteUrl(gsc.sites[0].siteUrl);
+        }
+      } catch (e) {
+        console.error("Failed to load dropdown data", e);
+      }
+    })();
+  }, [session]);
+
+  const handleGa = async () => {
+    if (!gaPropertyId) return;
     setBusy(true);
-    setOutput(null);
+    setActive("ga");
     try {
-      const r = await fetch(url);
-      const j = await r.json();
-      setOutput(j);
-    } catch (e: any) {
-      setOutput({ error: e?.message ?? "Request failed" });
+      const res = await fetch(
+        `/api/google/ga4/timeseries?propertyId=${encodeURIComponent(
+          gaPropertyId
+        )}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`
+      );
+      setOutput(await res.json());
     } finally {
       setBusy(false);
     }
-  }
-
-  const runGa = () => {
-    if (!propertyId) return setOutput({ error: "Enter GA4 propertyId" });
-    fetchJson(
-      `/api/ga/traffic?propertyId=${encodeURIComponent(
-        propertyId
-      )}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`
-    );
   };
 
-  const runGsc = () => {
-    if (!siteUrl) return setOutput({ error: "Enter GSC siteUrl" });
-    fetchJson(
-      `/api/gsc/keywords?siteUrl=${encodeURIComponent(
-        siteUrl
-      )}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(
-        end
-      )}&rowLimit=25`
-    );
+  const handleGsc = async () => {
+    if (!gscSiteUrl) return;
+    setBusy(true);
+    setActive("gsc");
+    try {
+      const res = await fetch(`/api/google/gsc/top-queries`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ siteUrl: gscSiteUrl, start, end, limit: 25 }),
+      });
+      setOutput(await res.json());
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const runGbp = () => {
-    fetchJson(`/api/gbp/insights`);
+  const handleGbp = async () => {
+    setBusy(true);
+    setActive("gbp");
+    try {
+      const res = await fetch(`/api/google/gbp/insights?start=${start}&end=${end}`);
+      setOutput(await res.json());
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
-    <>
-      <Head>
-        <title>VSight Pro — MVP Shell</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-      </Head>
+    <main className="p-6 max-w-5xl mx-auto">
+      <h1 className="text-2xl font-semibold">VSight Pro — MVP Shell</h1>
+      <p className="text-sm mt-1 text-gray-600">
+        GA traffic · GSC keywords · GBP insights (GBP is stubbed until approval)
+      </p>
 
-      <main className="max-w-5xl mx-auto px-4 py-10">
-        <h1 className="text-2xl font-semibold">VSight Pro — MVP Shell</h1>
-        <p className="text-sm text-gray-600 mt-1">
-          GA traffic · GSC keywords · GBP insights
-        </p>
-
-        {/* Auth Card */}
-        <section className="mt-6 border rounded-lg p-4">
-          <h2 className="font-medium mb-2">Auth</h2>
-          {loading ? (
-            <p>Loading session…</p>
-          ) : authed ? (
-            <div className="flex items-center gap-3">
-              <span className="text-sm">
-                Signed in as{" "}
-                <b>{(session?.user as any)?.email ?? session?.user?.name}</b>
-              </span>
-              <button
-                className="px-3 py-1.5 rounded bg-gray-200 hover:bg-gray-300"
-                onClick={() => signOut()}
-              >
-                Sign out
-              </button>
-            </div>
-          ) : (
-            <button
-              className="px-3 py-1.5 rounded bg-black text-white hover:bg-gray-800"
-              onClick={() => signIn("google")}
-            >
-              Sign in with Google
-            </button>
-          )}
-        </section>
-
-        {/* Controls */}
-        <section className="mt-6 border rounded-lg p-4">
-          <h2 className="font-medium mb-3">Inputs</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <label className="block">
-              <span className="text-sm text-gray-700">GA4 Property ID</span>
-              <input
-                className="mt-1 w-full border rounded px-3 py-2"
-                placeholder="e.g. 123456789"
-                value={propertyId}
-                onChange={(e) => setPropertyId(e.target.value)}
-              />
-            </label>
-
-            <label className="block">
-              <span className="text-sm text-gray-700">GSC Site URL</span>
-              <input
-                className="mt-1 w-full border rounded px-3 py-2"
-                placeholder="e.g. https://example.com/"
-                value={siteUrl}
-                onChange={(e) => setSiteUrl(e.target.value)}
-              />
-            </label>
-
-            <label className="block">
-              <span className="text-sm text-gray-700">Start</span>
-              <input
-                type="date"
-                className="mt-1 w-full border rounded px-3 py-2"
-                value={start}
-                onChange={(e) => setStart(e.target.value)}
-              />
-            </label>
-
-            <label className="block">
-              <span className="text-sm text-gray-700">End</span>
-              <input
-                type="date"
-                className="mt-1 w-full border rounded px-3 py-2"
-                value={end}
-                onChange={(e) => setEnd(e.target.value)}
-              />
-            </label>
-          </div>
-        </section>
-
-        {/* Actions + Output */}
-        <section className="mt-6 border rounded-lg p-4">
-          <h2 className="font-medium mb-3">Test Calls (last 7 days)</h2>
-
-          <div className="flex flex-wrap gap-2 mb-3">
-            <button
-              onClick={runGa}
-              disabled={!authed || busy}
-              className="px-3 py-1.5 rounded bg-emerald-600 text-white disabled:opacity-50"
-            >
-              GA: traffic
-            </button>
-            <button
-              onClick={runGsc}
-              disabled={!authed || busy}
-              className="px-3 py-1.5 rounded bg-sky-600 text-white disabled:opacity-50"
-            >
-              GSC: keywords
-            </button>
-            <button
-              onClick={runGbp}
-              disabled={busy}
-              className="px-3 py-1.5 rounded bg-amber-600 text-white disabled:opacity-50"
-            >
-              GBP: insights
+      <section className="mt-6 border rounded p-4">
+        <h2 className="font-medium mb-3">Auth</h2>
+        {loading ? (
+          <p>Loading session…</p>
+        ) : session ? (
+          <div className="flex items-center gap-2">
+            <span className="text-sm">
+              Signed in as <strong>{session.user?.email}</strong>
+            </span>
+            <button className="px-2 py-1 border rounded" onClick={() => signOut()}>
+              Sign out
             </button>
           </div>
+        ) : (
+          <button className="px-3 py-1 border rounded" onClick={() => signIn("google")}>
+            Sign in with Google
+          </button>
+        )}
+      </section>
 
-          <pre className="min-h-[320px] whitespace-pre-wrap bg-gray-50 border rounded p-3 text-sm overflow-auto">
-            {busy
-              ? "Loading…"
-              : output
-              ? JSON.stringify(output, null, 2)
-              : "{ }"}
-          </pre>
-        </section>
-      </main>
-    </>
+      <section className="mt-6 border rounded p-4">
+        <h2 className="font-medium mb-4">Inputs</h2>
+
+        <div className="grid md:grid-cols-2 gap-4">
+          <div>
+            <label className="text-sm block mb-1">GA4 Property</label>
+            <select
+              className="w-full border rounded p-2"
+              value={gaPropertyId}
+              onChange={(e) => setGaPropertyId(e.target.value)}
+              disabled={!session || gaProps.length === 0}
+            >
+              {gaProps.map((p) => (
+                <option key={p.propertyId} value={p.propertyId}>
+                  {p.displayName} ({p.propertyId})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-sm block mb-1">GSC Site</label>
+            <select
+              className="w-full border rounded p-2"
+              value={gscSiteUrl}
+              onChange={(e) => setGscSiteUrl(e.target.value)}
+              disabled={!session || gscSites.length === 0}
+            >
+              {gscSites.map((s) => (
+                <option key={s.siteUrl} value={s.siteUrl}>
+                  {s.siteUrl}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-sm block mb-1">Start</label>
+            <input
+              type="date"
+              className="w-full border rounded p-2"
+              value={start}
+              onChange={(e) => setStart(e.target.value)}
+            />
+          </div>
+
+          <div>
+            <label className="text-sm block mb-1">End</label>
+            <input
+              type="date"
+              className="w-full border rounded p-2"
+              value={end}
+              onChange={(e) => setEnd(e.target.value)}
+            />
+          </div>
+        </div>
+      </section>
+
+      <section className="mt-6 border rounded p-4">
+        <h2 className="font-medium mb-3">Test Calls (last 7 days)</h2>
+        <div className="flex gap-2 mb-3">
+          <button className="px-3 py-1 rounded border" onClick={handleGa} disabled={!session || busy}>
+            GA: traffic
+          </button>
+          <button className="px-3 py-1 rounded border" onClick={handleGsc} disabled={!session || busy}>
+            GSC: keywords
+          </button>
+          <button className="px-3 py-1 rounded border" onClick={handleGbp} disabled={!session || busy}>
+            GBP: insights
+          </button>
+        </div>
+
+        <pre className="text-xs whitespace-pre-wrap">{JSON.stringify(output ?? {}, null, 2)}</pre>
+      </section>
+    </main>
   );
-};
-
-export default IndexPage;
+}
