@@ -1,69 +1,69 @@
-import { google } from "googleapis";
+// lib/google.ts
 import type { NextApiRequest } from "next";
 import { getToken } from "next-auth/jwt";
+import { google } from "googleapis";
 
-export async function getAccessToken(req: NextApiRequest): Promise<string> {
-  const tok = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
-  const at = (tok as any)?.access_token as string | undefined;
-  if (!at) throw new Error("No Google access token on session");
-  return at;
+export async function getAccessToken(req: NextApiRequest): Promise<string | undefined> {
+  const token = await getToken({ req });
+  const accessToken = (token as any)?.access_token as string | undefined;
+  return accessToken;
 }
 
-// ------- GA4
-export async function gaRunReport(
-  accessToken: string,
-  propertyId: string,
-  body: any
-) {
-  const analytics = google.analyticsdata("v1beta");
-  google.options({ headers: { Authorization: `Bearer ${accessToken}` } });
-  const res = await analytics.properties.runReport({
-    property: `properties/${propertyId}`,
-    requestBody: body,
+export async function gaListProperties(accessToken: string) {
+  const auth = new google.auth.OAuth2();
+  auth.setCredentials({ access_token: accessToken });
+  const admin = google.analyticsadmin("v1beta");
+
+  // Account summaries include their property summaries
+  const resp = await admin.accountSummaries.list({
+    auth,
+    pageSize: 200,
   });
-  return res.data;
-}
 
-// ------- Search Console
-export async function gscQuery(
-  accessToken: string,
-  siteUrl: string,
-  requestBody: any
-) {
-  const webmasters = google.searchconsole("v1");
-  google.options({ headers: { Authorization: `Bearer ${accessToken}` } });
-  const res = await (webmasters as any).searchanalytics.query({
-    siteUrl,
-    requestBody,
+  const items =
+    resp.data.accountSummaries?.flatMap((as) =>
+      (as.propertySummaries || []).map((p) => ({
+        propertyId: p.property || "",
+        displayName: p.displayName || p.property || "",
+        account: as.name || "",
+      }))
+    ) || [];
+
+  // De-dup by propertyId, just in case
+  const seen = new Set<string>();
+  const props = items.filter((p) => {
+    if (!p.propertyId || seen.has(p.propertyId)) return false;
+    seen.add(p.propertyId);
+    return true;
   });
-  return res.data;
+
+  return props;
 }
 
-// (Optional) GBP: keep stub for now unless your project has access
-export function gbpStubInsights() {
-  const today = new Date();
-  const last = new Date(today);
-  last.setDate(today.getDate() - 7);
-  return {
-    rows: [
-      {
-        date: last.toISOString().slice(0, 10),
-        viewsSearch: 220,
-        viewsMaps: 180,
-        calls: 5,
-        directions: 9,
-        websiteClicks: 14,
-        topQueries: ["plumber", "emergency plumber", "leak repair"],
-      },
-      {
-        date: today.toISOString().slice(0, 10),
-        viewsSearch: 260,
-        viewsMaps: 210,
-        calls: 7,
-        directions: 12,
-        websiteClicks: 17,
-        topQueries: ["plumber", "water heater", "pipe burst"],
-      },
-    ],
-  };
+export async function gscListSites(accessToken: string) {
+  const auth = new google.auth.OAuth2();
+  auth.setCredentials({ access_token: accessToken });
+  const sc = google.searchconsole("v1");
+
+  const resp = await sc.sites.list({ auth });
+  const sites =
+    (resp.data.siteEntry || [])
+      // Only return sites the user actually has access to
+      .filter((s) => s.permissionLevel && s.permissionLevel !== "siteUnverifiedUser")
+      .map((s) => ({
+        siteUrl: s.siteUrl || "",
+        permissionLevel: s.permissionLevel || "",
+      })) || [];
+
+  return sites;
+}
+
+// Small helper to forward JSON or text from internal fetches
+export async function forwardJsonOrText<T = any>(res: Response): Promise<T | string> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return text;
+  }
 }
