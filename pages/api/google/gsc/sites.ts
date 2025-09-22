@@ -7,6 +7,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const sites = await gscListSites(req);
     res.status(200).json({ sites });
   } catch (e: any) {
-    res.status(400).json({ error: e?.message || "Failed to list GSC sites" });
+    res.status(400).json({ error: e?.message ?? "Failed to list GSC sites" });
   }
 }
