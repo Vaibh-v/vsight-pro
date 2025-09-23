@@ -1,6 +1,10 @@
 // pages/api/gbp/insights.ts
 import type { NextApiRequest, NextApiResponse } from "next";
-// Temporary stub: return static GBP insights so the app builds & the button works.
+
+/**
+ * Temporary stub so builds pass and the GBP button works.
+ * Replace with real Google Business Profile insights later.
+ */
 export default async function handler(
   _req: NextApiRequest,
   res: NextApiResponse
