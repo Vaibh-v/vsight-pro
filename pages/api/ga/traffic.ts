@@ -9,15 +9,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ error: "Missing propertyId/start/end" });
     }
 
-    const data = await gaRunReport(
-      req,
-      String(propertyId),
-      String(start),
-      String(end)
-    );
+    const report = await gaRunReport(req, String(propertyId), {
+      dimensions: [{ name: "date" }],
+      metrics: [{ name: "sessions" }],
+      dateRanges: [{ startDate: String(start), endDate: String(end) }],
+      orderBys: [{ dimension: { dimensionName: "date" } }],
+      limit: "1000",
+    });
 
-    res.status(200).json(data);
+    // Map to a small payload
+    const rows =
+      report.rows?.map((r) => ({
+        date: r.dimensionValues?.[0]?.value,
+        sessions: Number(r.metricValues?.[0]?.value ?? 0),
+      })) ?? [];
+
+    res.status(200).json({ points: rows });
   } catch (e: any) {
-    res.status(400).json({ error: e?.message || "GA4 runReport failed" });
+    res.status(400).json({ error: e?.message ?? "GA report failed" });
   }
 }
