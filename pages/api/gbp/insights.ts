@@ -1,8 +1,6 @@
 // pages/api/gbp/insights.ts
 import type { NextApiRequest, NextApiResponse } from "next";
-
 // Temporary stub: return static GBP insights so the app builds & the button works.
-// Replace with real GBP API integration later.
 export default async function handler(
   _req: NextApiRequest,
   res: NextApiResponse
