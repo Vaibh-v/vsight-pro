@@ -1,132 +1,128 @@
-import React, { useEffect, useState } from "react";
+// pages/index.tsx
+import { useEffect, useMemo, useState } from "react";
 import { signIn, signOut, useSession } from "next-auth/react";
-
-type GAProp = { propertyId: string; displayName: string };
-type GSCSite = { siteUrl: string; permissionLevel: string };
-
-const today = new Date();
-const d = (dt: Date) => dt.toISOString().slice(0, 10);
-const aWeekAgo = new Date(today.getTime() - 6 * 86400_000);
 
 export default function Home() {
   const { data: session, status } = useSession();
-  const loading = status === "loading";
+  const authed = status === "authenticated";
 
-  const [gaProps, setGaProps] = useState<GAProp[]>([]);
-  const [gscSites, setGscSites] = useState<GSCSite[]>([]);
+  const [gaProps, setGaProps] = useState<string[]>([]);
+  const [gaPropertyId, setGaPropertyId] = useState<string>("");
 
-  const [gaPropertyId, setGaPropertyId] = useState("");
-  const [gscSiteUrl, setGscSiteUrl] = useState("");
+  const [gscSites, setGscSites] = useState<string[]>([]);
+  const [gscSite, setGscSite] = useState<string>("");
 
-  const [start, setStart] = useState(d(aWeekAgo));
-  const [end, setEnd] = useState(d(today));
+  const today = useMemo(() => new Date(), []);
+  const sevenAgo = useMemo(() => new Date(Date.now() - 7 * 86400 * 1000), []);
+  const [start, setStart] = useState<string>(fmt(sevenAgo));
+  const [end, setEnd] = useState<string>(fmt(today));
 
-  const [output, setOutput] = useState<any>(null);
+  const [output, setOutput] = useState<any>({});
 
   useEffect(() => {
-    if (!session) return;
-    (async () => {
-      try {
-        const [pRes, sRes] = await Promise.all([
-          fetch("/api/ga/properties"),
-          fetch("/api/gsc/sites"),
-        ]);
-        const p = await pRes.json();
-        const s = await sRes.json();
-        setGaProps(p.properties ?? []);
-        setGscSites(s.sites ?? []);
-        if (!gaPropertyId && p.properties?.[0]) setGaPropertyId(p.properties[0].propertyId);
-        if (!gscSiteUrl && s.sites?.[0]) setGscSiteUrl(s.sites[0].siteUrl);
-      } catch (err) {
-        console.error(err);
-      }
-    })();
-  }, [session]);
+    if (!authed) return;
+    // GA properties
+    fetch("/api/google/ga4/properties")
+      .then((r) => r.json())
+      .then((d) => {
+        const list: string[] = d.properties ?? [];
+        setGaProps(list);
+        if (!gaPropertyId && list.length) setGaPropertyId(list[0]);
+      })
+      .catch(() => {});
+    // GSC sites
+    fetch("/api/google/gsc/sites")
+      .then((r) => r.json())
+      .then((d) => {
+        const list: string[] = d.sites ?? [];
+        setGscSites(list);
+        if (!gscSite && list.length) setGscSite(list[0]);
+      })
+      .catch(() => {});
+  }, [authed]);
 
   const runGa = async () => {
-    setOutput({ loading: true });
-    const res = await fetch("/api/ga/traffic", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ propertyId: gaPropertyId, start, end }),
-    });
-    setOutput(await res.json());
+    setOutput({});
+    const url = `/api/ga/traffic?propertyId=${encodeURIComponent(
+      gaPropertyId
+    )}&start=${start}&end=${end}`;
+    const data = await fetch(url).then((r) => r.json());
+    setOutput(data);
   };
 
   const runGsc = async () => {
-    setOutput({ loading: true });
-    const res = await fetch("/api/gsc/keywords", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ siteUrl: gscSiteUrl, start, end }),
-    });
-    setOutput(await res.json());
+    setOutput({});
+    const url = `/api/google/gsc/query?siteUrl=${encodeURIComponent(
+      gscSite
+    )}&start=${start}&end=${end}`;
+    const data = await fetch(url).then((r) => r.json());
+    setOutput(data);
   };
 
   return (
-    <div style={{ maxWidth: 1000, margin: "40px auto", padding: 16, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif" }}>
-      <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 6 }}>VSight Pro — MVP Shell</h1>
-      <p style={{ color: "#555", marginBottom: 24 }}>GA traffic · GSC keywords · (GBP coming soon)</p>
+    <main className="container" style={{ maxWidth: 920, margin: "40px auto", padding: 16 }}>
+      <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 8 }}>VSight Pro — MVP Shell</h1>
+      <p style={{ color: "#555", marginBottom: 24 }}>GA traffic · GSC keywords</p>
 
-      <section style={{ border: "1px solid #eee", borderRadius: 8, padding: 16, marginBottom: 20 }}>
-        <h3 style={{ margin: 0, marginBottom: 12 }}>Auth</h3>
-        {loading ? (
-          <p>Loading session…</p>
-        ) : session ? (
+      {/* Auth */}
+      <section style={{ border: "1px solid #eee", borderRadius: 8, padding: 16, marginBottom: 16 }}>
+        <h3>Auth</h3>
+        {authed ? (
           <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-            <span>Signed in as <b>{session.user?.email}</b></span>
-            <button onClick={() => signOut()} style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 6 }}>Sign out</button>
+            <span>Signed in as <strong>{session?.user?.email}</strong></span>
+            <button onClick={() => signOut()}>Sign out</button>
           </div>
         ) : (
-          <button onClick={() => signIn("google")} style={{ padding: "8px 12px", background: "black", color: "white", borderRadius: 6 }}>
-            Sign in with Google
-          </button>
+          <button onClick={() => signIn("google")}>Sign in with Google</button>
         )}
       </section>
 
-      {session && (
-        <>
-          <section style={{ border: "1px solid #eee", borderRadius: 8, padding: 16, marginBottom: 20 }}>
-            <h3 style={{ margin: 0, marginBottom: 12 }}>Inputs</h3>
-            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
-              <label>GA4 Property</label>
-              <select value={gaPropertyId} onChange={(e) => setGaPropertyId(e.target.value)}>
-                {gaProps.map((p) => (
-                  <option key={p.propertyId} value={p.propertyId}>
-                    {p.displayName} ({p.propertyId})
-                  </option>
-                ))}
-              </select>
+      {/* Inputs */}
+      <section style={{ border: "1px solid #eee", borderRadius: 8, padding: 16, marginBottom: 16 }}>
+        <h3>Inputs</h3>
 
-              <label>GSC Site</label>
-              <select style={{ minWidth: 360 }} value={gscSiteUrl} onChange={(e) => setGscSiteUrl(e.target.value)}>
-                {gscSites.map((s) => (
-                  <option key={s.siteUrl} value={s.siteUrl}>
-                    {s.siteUrl} — {s.permissionLevel}
-                  </option>
-                ))}
-              </select>
+        <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", rowGap: 8, columnGap: 12 }}>
+          <label style={{ alignSelf: "center" }}>GA4 Property</label>
+          <select value={gaPropertyId} onChange={(e) => setGaPropertyId(e.target.value)}>
+            {gaProps.map((p) => (
+              <option key={p} value={p}>{p}</option>
+            ))}
+          </select>
 
-              <label>Start</label>
-              <input type="date" value={start} onChange={(e) => setStart(e.target.value)} />
-              <label>End</label>
-              <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
-            </div>
-          </section>
+          <label style={{ alignSelf: "center" }}>GSC Site</label>
+          <select value={gscSite} onChange={(e) => setGscSite(e.target.value)}>
+            {gscSites.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
 
-          <section style={{ border: "1px solid #eee", borderRadius: 8, padding: 16 }}>
-            <h3 style={{ margin: 0, marginBottom: 12 }}>Test Calls (last 7 days)</h3>
-            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-              <button onClick={runGa} style={{ padding: "6px 10px", borderRadius: 16, border: "1px solid #ddd" }}>GA: traffic</button>
-              <button onClick={runGsc} style={{ padding: "6px 10px", borderRadius: 16, border: "1px solid #ddd" }}>GSC: keywords</button>
-            </div>
+          <label style={{ alignSelf: "center" }}>Start</label>
+          <input type="date" value={start} onChange={(e) => setStart(e.target.value)} />
 
-            <pre style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 8, padding: 16, whiteSpace: "pre-wrap" }}>
-              {JSON.stringify(output ?? {}, null, 2)}
-            </pre>
-          </section>
-        </>
-      )}
-    </div>
+          <label style={{ alignSelf: "center" }}>End</label>
+          <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
+        </div>
+      </section>
+
+      {/* Tests */}
+      <section style={{ border: "1px solid #eee", borderRadius: 8, padding: 16 }}>
+        <h3>Test Calls (last 7 days)</h3>
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <button onClick={runGa}>GA: traffic</button>
+          <button onClick={runGsc}>GSC: keywords</button>
+        </div>
+        <pre style={{ background: "#fafafa", padding: 16, overflow: "auto", borderRadius: 6 }}>
+          {JSON.stringify(output, null, 2)}
+        </pre>
+      </section>
+    </main>
   );
+}
+
+function fmt(d: Date) {
+  // yyyy-mm-dd for <input type="date">
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
