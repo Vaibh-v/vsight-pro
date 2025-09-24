@@ -1,7 +1,7 @@
-import NextAuth from "next-auth";
+import NextAuth, { type NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
 
-export const authOptions = {
+export const authOptions: NextAuthOptions = {
   providers: [
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID!,
@@ -21,16 +21,15 @@ export const authOptions = {
       }
     })
   ],
+  // IMPORTANT: type the literal, not just string
   session: { strategy: "jwt" },
   callbacks: {
     async jwt({ token, account }) {
-      // Persist Google access_token to the token right after login
       if (account?.access_token) token.google_access_token = account.access_token;
       return token;
     },
     async session({ session, token }) {
-      // Expose token to client if you ever need it client-side
-      (session as any).google_access_token = token.google_access_token;
+      (session as any).google_access_token = (token as any)?.google_access_token;
       return session;
     }
   }
