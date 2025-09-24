@@ -1,6 +1,5 @@
 // /lib/google.ts
-// Centralized Google helpers (GA4, GSC, GBP) using fetch + OAuth access token from NextAuth.
-// No 'googleapis' SDK needed.
+// Google helpers (GA4, GSC, GBP) using fetch + OAuth token from NextAuth.
 
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/pages/api/auth/[...nextauth]";
@@ -25,15 +24,31 @@ function authHeaders(token: string) {
 
 /* ---------------------------------- GA4 ----------------------------------- */
 
-/**
- * List GA4 properties the current user can access via the Admin API.
- * Returns lightweight objects: { id: "properties/123", name, accountName }
- */
+/** More compatible GA4 property listing (prefers Account Summaries) */
 export async function listGA4Properties(token: string) {
-  // 1) List accounts
+  // Preferred: summaries (accounts + properties in one call)
+  const sumRes = await fetch("https://analyticsadmin.googleapis.com/v1beta/accountSummaries", {
+    headers: authHeaders(token),
+  });
+  if (sumRes.ok) {
+    const json = await sumRes.json();
+    const out: { id: string; name: string; accountName?: string }[] = [];
+    for (const acc of json.accountSummaries ?? []) {
+      const accountName = acc.name; // "accountSummaries/123"
+      for (const p of acc.propertySummaries ?? []) {
+        out.push({
+          id: p.property,          // "properties/XXXX"
+          name: p.displayName,     // property display name
+          accountName,
+        });
+      }
+    }
+    return out;
+  }
+
+  // Fallback: list accounts then properties per account
   const accRes = await fetch("https://analyticsadmin.googleapis.com/v1beta/accounts", {
     headers: authHeaders(token),
-    // Note: Region selection not needed; Google APIs are global.
   });
   if (!accRes.ok) {
     const err = await safeJson(accRes);
@@ -42,31 +57,22 @@ export async function listGA4Properties(token: string) {
   const accJson = await accRes.json();
   const accounts: { name: string }[] = accJson.accounts ?? [];
 
-  // 2) For each account, list properties
   const out: { id: string; name: string; accountName?: string }[] = [];
   for (const acc of accounts) {
     const propsRes = await fetch(
       `https://analyticsadmin.googleapis.com/v1beta/${acc.name}/properties?showDeleted=false`,
       { headers: authHeaders(token) }
     );
-    if (!propsRes.ok) continue; // skip accounts we can't enumerate
+    if (!propsRes.ok) continue;
     const propsJson = await propsRes.json();
-    const props = propsJson.properties ?? [];
-    for (const p of props) {
-      out.push({
-        id: p.name, // e.g. "properties/123456789"
-        name: p.displayName,
-        accountName: acc.name, // e.g. "accounts/123456"
-      });
+    for (const p of propsJson.properties ?? []) {
+      out.push({ id: p.name, name: p.displayName, accountName: acc.name });
     }
   }
   return out;
 }
 
-/**
- * GA4 time series for sessions via Analytics Data API runReport
- * Returns { points: [{date, sessions}], totalSessions }
- */
+/** GA4 sessions timeseries via Analytics Data API */
 export async function ga4SessionsTimeseries(params: {
   token: string;
   propertyId: string; // "properties/XXXX"
@@ -78,7 +84,6 @@ export async function ga4SessionsTimeseries(params: {
     metrics: [{ name: "sessions" }],
     dateRanges: [{ startDate: params.start, endDate: params.end }],
   };
-
   const url = `https://analyticsdata.googleapis.com/v1beta/${params.propertyId}:runReport`;
   const res = await fetch(url, {
     method: "POST",
@@ -99,28 +104,25 @@ export async function ga4SessionsTimeseries(params: {
 
 /* ---------------------------------- GSC ----------------------------------- */
 
-/** List verified Search Console sites for the current user */
 export async function listGscSites(token: string) {
   const res = await fetch("https://www.googleapis.com/webmasters/v3/sites", {
     headers: authHeaders(token),
   });
   const json = await safeJson(res);
   if (!res.ok) throw new Error(json?.error?.message || "GSC sites failed");
-  const items = (json?.siteEntry ?? []).map((s: any) => ({
+  return (json?.siteEntry ?? []).map((s: any) => ({
     siteUrl: s.siteUrl as string,
     permission: s.permissionLevel as string,
   }));
-  return items;
 }
 
-/** Search Console query (date/query/page/country) → normalized rows */
 export async function gscQuery(params: {
   token: string;
   siteUrl: string;
-  start: string; // YYYY-MM-DD
-  end: string;   // YYYY-MM-DD
-  country?: string;  // 'ALL' or ISO code (e.g., 'US', 'IN')
-  pagePath?: string; // optional filter string
+  start: string;
+  end: string;
+  country?: string;  // 'ALL' or ISO code
+  pagePath?: string; // optional filter
 }) {
   type Dim = "date" | "query" | "page" | "country";
   const dimensions: Dim[] = ["date", "query", "page"];
@@ -174,16 +176,11 @@ export async function gscQuery(params: {
 
 /* ---------------------------------- GBP ----------------------------------- */
 
-/**
- * Business Profile Performance API – daily metrics time series.
- * NOTE: Ensure the API is enabled & scopes include business.manage when you ship GBP tile.
- * Returns rows of { date, calls, directions, websiteClicks, viewsSearch, viewsMaps }.
- */
 export async function gbpInsights(params: {
   token: string;
   locationId: string; // "locations/XXXX"
-  start: string; // YYYY-MM-DD
-  end: string;   // YYYY-MM-DD
+  start: string;
+  end: string;
 }) {
   const url = `https://businessprofileperformance.googleapis.com/v1/${params.locationId}:fetchMultiDailyMetricsTimeSeries`;
   const body = {
@@ -205,7 +202,6 @@ export async function gbpInsights(params: {
   const json = await safeJson(res);
   if (!res.ok) throw new Error(json?.error?.message || "GBP insights failed");
 
-  // Normalize response; the exact JSON shape can vary; the below handles common structure.
   const rows: Array<{
     date: string;
     calls: number;
@@ -217,23 +213,14 @@ export async function gbpInsights(params: {
 
   const seriesList = json?.timeSeries ?? json?.time_series ?? [];
   for (const series of seriesList) {
-    const metric =
-      series.dailyMetric || series.metric || series.metricType || series.daily_metric;
+    const metric = series.dailyMetric || series.metric || series.metricType || series.daily_metric;
     const points = series.timeSeries || series.points || series.time_series || [];
     for (const p of points) {
       const date = p.date || p.dimensions?.date || p?.timeDimension?.time || p?.time || "";
       const val = Number(p.value ?? p.measurement ?? p?.values?.[0] ?? 0);
-
       let row = rows.find((r) => r.date === date);
       if (!row) {
-        row = {
-          date,
-          calls: 0,
-          directions: 0,
-          websiteClicks: 0,
-          viewsSearch: 0,
-          viewsMaps: 0,
-        };
+        row = { date, calls: 0, directions: 0, websiteClicks: 0, viewsSearch: 0, viewsMaps: 0 };
         rows.push(row);
       }
       if (metric === "CALL_CLICKS") row.calls = val;
@@ -247,36 +234,20 @@ export async function gbpInsights(params: {
 }
 
 /* --------------------------------- Schemas -------------------------------- */
-
 export const InputRangeSchema = z.object({
   start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
 });
 
 /* --------------------------------- Helpers -------------------------------- */
-
 async function safeJson(res: Response) {
-  try {
-    return await res.json();
-  } catch {
-    return null;
-  }
+  try { return await res.json(); } catch { return null; }
 }
 
 /* ------------------------------ Legacy Aliases ----------------------------- */
-/** Some older files might still import these names. Keep aliases to avoid churn. */
-
-export const getAccessToken = getAccessTokenOrThrow; // legacy name
-
-export async function gscQueryKeywords(params: {
-  token: string;
-  siteUrl: string;
-  start: string;
-  end: string;
-  country?: string;
-  pagePath?: string;
-}) {
-  return gscQuery(params);
-}
-
-export const gaListProperties = listGA4Properties; // legacy name for properties listing
+export const getAccessToken = getAccessTokenOrThrow;
+export const gaListProperties = listGA4Properties;
+export const gscListSites = listGscSites;
+export async function gscQueryKeywords(p: {
+  token: string; siteUrl: string; start: string; end: string; country?: string; pagePath?: string;
+}) { return gscQuery(p); }
