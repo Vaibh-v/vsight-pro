@@ -2,43 +2,46 @@ import * as React from "react";
 
 export type Option = { value: string; label: string };
 
-type Props =
-  | {
-      label: string;
-      value?: string;
-      onChange: (v: string) => void;
-      /** Pre-supplied options */
-      options: Option[];
-      /** If options is provided, source is ignored */
-      source?: never;
-    }
-  | {
-      label: string;
-      value?: string;
-      onChange: (v: string) => void;
-      /** Endpoint to fetch options from (GET). Expected shapes are auto-mapped:
-       *  - /api/google/ga4/properties -> { items: [{ id, name }] }
-       *  - /api/google/gsc/sites      -> { items: [{ siteUrl, permission }] }
-       *  You may customize with `map` if your endpoint differs.
-       */
-      source: string;
-      options?: never;
-      /** Optional custom mapper from JSON payload to Option[] */
-      map?: (json: any) => Option[];
-    };
+type PropsWithOptions = {
+  label: string;
+  value?: string;
+  onChange: (v: string) => void;
+  /** Pre-supplied options */
+  options: Option[];
+  source?: never;
+  map?: never;
+};
+
+type PropsWithSource = {
+  label: string;
+  value?: string;
+  onChange: (v: string) => void;
+  /** Endpoint to fetch options (GET). Known shapes are auto-mapped:
+   *  - { items: [{ id, name }] }   // GA4 properties
+   *  - { items: [{ siteUrl, ...}] } // GSC sites
+   */
+  source: string;
+  options?: never;
+  /** Optional custom mapper from JSON payload to Option[] */
+  map?: (json: any) => Option[];
+};
+
+type Props = PropsWithOptions | PropsWithSource;
+
+function hasSource(p: Props): p is PropsWithSource {
+  return (p as PropsWithSource).source !== undefined;
+}
 
 export function Dropdown(props: Props) {
   const [opts, setOpts] = React.useState<Option[]>(
-    "options" in props && props.options ? props.options : []
+    !hasSource(props) && props.options ? props.options : []
   );
-  const [loading, setLoading] = React.useState<boolean>(
-    "source" in props && !!props.source
-  );
+  const [loading, setLoading] = React.useState<boolean>(hasSource(props));
   const [error, setError] = React.useState<string | undefined>();
 
   // If using source, fetch and map to Option[]
   React.useEffect(() => {
-    if (!("source" in props) || !props.source) return;
+    if (!hasSource(props)) return;
 
     let alive = true;
     setLoading(true);
@@ -51,11 +54,13 @@ export function Dropdown(props: Props) {
       })
       .then((json) => {
         if (!alive) return;
+
         // Custom mapper wins
         if (props.map) {
           setOpts(props.map(json));
           return;
         }
+
         // Auto-map known shapes
         const items: any[] = json?.items ?? [];
         if (Array.isArray(items) && items.length) {
@@ -64,7 +69,7 @@ export function Dropdown(props: Props) {
             setOpts(items.map((p: any) => ({ value: p.id, label: p.name })));
             return;
           }
-          // GSC sites: {siteUrl, permission}
+          // GSC sites: {siteUrl,...}
           if ("siteUrl" in items[0]) {
             setOpts(
               items.map((s: any) => ({
@@ -75,7 +80,7 @@ export function Dropdown(props: Props) {
             return;
           }
         }
-        // Fallback: try to coerce
+        // Fallback coercion
         const fallback =
           Array.isArray(items) && items.length
             ? items.map((x: any, i: number) => ({
@@ -91,7 +96,7 @@ export function Dropdown(props: Props) {
     return () => {
       alive = false;
     };
-  }, [("source" in props && props.source) || ""]);
+  }, [hasSource(props) ? props.source : ""]); // re-run if source URL changes
 
   const handleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     props.onChange(e.target.value || "");
