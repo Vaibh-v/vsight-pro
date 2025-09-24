@@ -1,16 +1,17 @@
-import type { NextApiRequest, NextApiResponse } from "next";
-import { getAccessTokenOrThrow, ga4SessionsTimeseries, gscQuery } from "@/lib/google";
-import { prisma } from "@/lib/prisma";
-
-// Minimal guard; call with /api/jobs/daily-pull?secret=...
 function checkSecret(req: NextApiRequest) {
-  const ok = req.query.secret && req.query.secret === process.env.CRON_SECRET;
+  const header = req.headers.authorization; // "Bearer <secret>"
+  const bearer = header?.startsWith("Bearer ") ? header.slice(7) : undefined;
+  const fromQuery = (req.query.secret as string | undefined)?.trim();
+  const expected = process.env.CRON_SECRET;
+
+  const ok = !!expected && (bearer === expected || fromQuery === expected);
   if (!ok) {
     const e = new Error("Forbidden");
     (e as any).status = 403;
     throw e;
   }
 }
+
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
