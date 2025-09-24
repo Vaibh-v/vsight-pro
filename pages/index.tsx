@@ -1,115 +1,98 @@
-import { useEffect, useMemo, useState } from "react";
+import * as React from "react";
+import useSWR from "swr";
+import { DateRange } from "@/components/DateRange";
+import { Dropdown } from "@/components/Dropdown";
+import { Sparkline } from "@/components/Chart";
+import { InsightsCards, type InsightCard } from "@/components/InsightsCards";
 
-type GAProperty = { id: string; displayName: string; account: string };
-type GSite = { siteUrl: string; permissionLevel: string };
+const fetcher = (url: string, opts?: any) => fetch(url, opts).then(r => r.json());
 
 export default function Home() {
-  const [gaProps, setGaProps] = useState<GAProperty[]>([]);
-  const [gscSites, setGscSites] = useState<GSite[]>([]);
-  const [gaSelected, setGaSelected] = useState<string>(process.env.DEFAULT_GA4_PROPERTY ?? "");
-  const [gscSelected, setGscSelected] = useState<string>(process.env.DEFAULT_GSC_SITE ?? "");
-  const [start, setStart] = useState<string>(() => new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10));
-  const [end, setEnd] = useState<string>(() => new Date().toISOString().slice(0, 10));
-  const [out, setOut] = useState<any>({});
+  const today = new Date();
+  const endDefault = today.toISOString().slice(0,10);
+  const startDefault = new Date(today.getTime() - 27*86400000).toISOString().slice(0,10);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const [gaRes, gscRes] = await Promise.all([
-          fetch("/api/google/ga4/properties"),
-          fetch("/api/google/gsc/sites")
-        ]);
+  const [start, setStart] = React.useState(startDefault);
+  const [end, setEnd] = React.useState(endDefault);
 
-        const gaJson = await gaRes.json();
-        const gscJson = await gscRes.json();
+  const { data: gaProps } = useSWR("/api/google/ga4/properties", fetcher);
+  const { data: gscSites } = useSWR("/api/google/gsc/sites", fetcher);
 
-        if (gaRes.ok) {
-          setGaProps(gaJson.properties ?? []);
-          if (!gaSelected && gaJson.properties?.[0]?.id) setGaSelected(gaJson.properties[0].id);
-        } else {
-          setOut((o: any) => ({ ...o, gaPropsError: gaJson }));
-        }
+  const [gaProp, setGaProp] = React.useState<string>("");
+  const [gscSite, setGscSite] = React.useState<string>("");
 
-        if (gscRes.ok) {
-          setGscSites(gscJson.siteEntries ?? []);
-          if (!gscSelected && gscJson.siteEntries?.[0]?.siteUrl) setGscSelected(gscJson.siteEntries[0].siteUrl);
-        } else {
-          setOut((o: any) => ({ ...o, gscSitesError: gscJson }));
-        }
-      } catch (e: any) {
-        setOut({ error: e?.message ?? String(e) });
-      }
-    })();
-  }, []); // load once
-
-  const gaOptions = useMemo(
-    () =>
-      gaProps.map((p) => ({
-        value: p.id,
-        label: p.displayName ? `${p.displayName} (${p.id.replace("properties/", "")})` : p.id
-      })),
-    [gaProps]
+  const { data: traffic } = useSWR(
+    gaProp ? `/api/ga/traffic?propertyId=${encodeURIComponent(gaProp)}&start=${start}&end=${end}` : null,
+    fetcher
   );
 
-  const runGATraffic = async () => {
-    if (!gaSelected) return setOut({ error: "Select a GA4 property" });
-    const propertyId = gaSelected.startsWith("properties/") ? gaSelected : `properties/${gaSelected}`;
-    const url = `/api/ga/traffic?propertyId=${encodeURIComponent(propertyId)}&start=${start}&end=${end}`;
-    const r = await fetch(url);
-    setOut(await r.json());
-  };
+  const { data: insights, isValidating: insightsLoading, mutate: recompute } = useSWR<{
+    items: InsightCard[];
+  }>(
+    gscSite ? ["/api/insights/compute", gscSite, start, end].join("|") : null,
+    (key: string) => {
+      const [, site] = key.split("|");
+      return fetcher("/api/insights/compute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gscSiteUrl: site, start, end }),
+      });
+    }
+  );
 
-  const runGSCKeywords = async () => {
-    if (!gscSelected) return setOut({ error: "Select a GSC site" });
-    const url = `/api/google/gsc/keywords?siteUrl=${encodeURIComponent(gscSelected)}&start=${start}&end=${end}`;
-    const r = await fetch(url, { method: "POST" });
-    setOut(await r.json());
-  };
+  const trafficPoints = (traffic?.points ?? []).map((p: any) => ({ date: p.date, value: p.sessions }));
 
   return (
-    <main style={{ maxWidth: 960, margin: "0 auto", padding: 24, fontFamily: "system-ui, sans-serif" }}>
-      <h1>VSight Pro — MVP Shell</h1>
-      <p style={{ color: "#666" }}>GA traffic · GSC keywords</p>
+    <main className="min-h-screen bg-neutral-950 text-neutral-100">
+      <div className="mx-auto max-w-6xl px-6 py-10">
+        <header className="flex flex-col md:flex-row md:items-end md:justify-between gap-6">
+          <div>
+            <h1 className="text-2xl font-semibold">VSight — Local SEO Cockpit</h1>
+            <p className="text-neutral-400 mt-1">Connect GA4 + Search Console. Track traffic, coverage, movers.</p>
+          </div>
+          <DateRange start={start} end={end} onStart={setStart} onEnd={setEnd} />
+        </header>
 
-      <section style={{ border: "1px solid #eee", padding: 16, borderRadius: 8, marginTop: 16 }}>
-        <h3>Inputs</h3>
-        <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 8, alignItems: "center" }}>
-          <label>GA4 Property</label>
-          <select value={gaSelected} onChange={(e) => setGaSelected(e.target.value)} disabled={!gaOptions.length}>
-            {!gaOptions.length && <option value="">(loading…)</option>}
-            {gaOptions.map((o) => (
-              <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
-          </select>
+        <section className="mt-8 grid md:grid-cols-2 gap-6">
+          <Dropdown
+            label="GA4 Property"
+            options={(gaProps?.items ?? []).map((p: any) => ({ value: p.id, label: p.name }))}
+            value={gaProp}
+            onChange={setGaProp}
+          />
+          <Dropdown
+            label="GSC Site"
+            options={(gscSites?.items ?? []).map((s: any) => ({ value: s.siteUrl, label: s.siteUrl }))}
+            value={gscSite}
+            onChange={setGscSite}
+          />
+        </section>
 
-          <label>GSC Site</label>
-          <select value={gscSelected} onChange={(e) => setGscSelected(e.target.value)} disabled={!gscSites.length}>
-            {!gscSites.length && <option value="">(loading…)</option>}
-            {gscSites.map((s) => (
-              <option key={s.siteUrl} value={s.siteUrl}>
-                {s.siteUrl} {s.permissionLevel ? `(${s.permissionLevel})` : ""}
-              </option>
-            ))}
-          </select>
+        <section className="mt-8 grid md:grid-cols-3 gap-6">
+          <div className="rounded-2xl border border-neutral-800 p-4 col-span-1 md:col-span-2">
+            <div className="text-sm text-neutral-400 mb-2">Traffic (sessions)</div>
+            {trafficPoints?.length ? <Sparkline points={trafficPoints} /> : <div className="text-neutral-500">Select a GA4 property</div>}
+            {traffic?.totalSessions != null && (
+              <div className="mt-3 text-sm">Total: <b>{traffic.totalSessions}</b></div>
+            )}
+          </div>
+          <div className="rounded-2xl border border-neutral-800 p-4">
+            <div className="text-sm text-neutral-400 mb-2">Insights</div>
+            <button
+              className="rounded-xl border border-neutral-700 px-3 py-2 text-sm hover:bg-neutral-900"
+              onClick={() => recompute()}
+              disabled={!gscSite || insightsLoading}
+            >
+              {insightsLoading ? "Computing…" : "Compute insights"}
+            </button>
+            <div className="text-xs text-neutral-500 mt-2">Requires a selected GSC site</div>
+          </div>
+        </section>
 
-          <label>Start</label>
-          <input type="date" value={start} onChange={(e) => setStart(e.target.value)} />
-          <label>End</label>
-          <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
-        </div>
-      </section>
-
-      <section style={{ border: "1px solid #eee", padding: 16, borderRadius: 8, marginTop: 16 }}>
-        <h3>Test Calls (last 7 days)</h3>
-        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-          <button onClick={runGATraffic}>GA: traffic</button>
-          <button onClick={runGSCKeywords}>GSC: keywords</button>
-        </div>
-
-        <pre style={{ background: "#fafafa", padding: 16, borderRadius: 8, overflow: "auto" }}>
-{JSON.stringify(out, null, 2)}
-        </pre>
-      </section>
+        <section className="mt-6">
+          <InsightsCards items={insights?.items ?? []} />
+        </section>
+      </div>
     </main>
   );
 }
