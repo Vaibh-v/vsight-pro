@@ -61,6 +61,10 @@ export default function Home() {
   const { data: keywords, isLoading: keywordsLoading } =
     useFetch<{ rows: any[] }>(keywordsKey);
 
+  // ✅ Map GA4 sessions -> Sparkline {date, value}
+  const sparkPoints =
+    (traffic?.points ?? []).map(p => ({ date: p.date, value: p.sessions })) as { date: string; value: number }[];
+
   return (
     <main className="p-6 space-y-6">
       <Header />
@@ -71,7 +75,7 @@ export default function Home() {
 
       <div className="flex flex-wrap items-center gap-3">
         <span>Start</span>
-        {/* ✅ DateRange expects start/end/onStart/onEnd */}
+        {/* DateRange expects start/end/onStart/onEnd */}
         <DateRange
           start={range.start}
           end={range.end}
@@ -95,7 +99,7 @@ export default function Home() {
       <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="col-span-1 md:col-span-2 p-4 border rounded-xl">
           <h3 className="font-medium mb-2">Traffic (sessions)</h3>
-          <Sparkline loading={trafficLoading} points={traffic?.points ?? []} />
+          <Sparkline loading={trafficLoading} points={sparkPoints} />
           {!ga4PropertyId && <div className="text-xs mt-2 text-gray-500">Select a GA4 property</div>}
         </div>
 
