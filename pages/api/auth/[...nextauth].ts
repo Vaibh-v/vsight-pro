@@ -1,6 +1,6 @@
 import NextAuth, { NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
-import { JWT } from "next-auth/jwt";
+import type { JWT } from "next-auth/jwt";
 
 const GOOGLE_AUTHORIZATION_URL =
   "https://accounts.google.com/o/oauth2/v2/auth?" +
@@ -10,37 +10,54 @@ const GOOGLE_AUTHORIZATION_URL =
     response_type: "code",
   });
 
-async function refreshAccessToken(token: JWT): Promise<JWT> {
+type ExtendedToken = JWT & {
+  accessToken?: string;
+  refreshToken?: string;
+  accessTokenExpires?: number; // epoch ms
+  error?: "RefreshAccessTokenError";
+};
+
+async function refreshAccessToken(token: ExtendedToken): Promise<ExtendedToken> {
   try {
-    const url = "https://oauth2.googleapis.com/token";
-    const params = new URLSearchParams({
-      client_id: process.env.GOOGLE_CLIENT_ID!,
-      client_secret: process.env.GOOGLE_CLIENT_SECRET!,
-      grant_type: "refresh_token",
-      refresh_token: token.refreshToken as string,
+    if (!token.refreshToken) throw new Error("Missing refresh token");
+
+    const res = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: process.env.GOOGLE_CLIENT_ID || "",
+        client_secret: process.env.GOOGLE_CLIENT_SECRET || "",
+        grant_type: "refresh_token",
+        refresh_token: token.refreshToken,
+      }),
     });
 
-    const res = await fetch(url, { method: "POST", body: params });
     const data = await res.json();
+    if (!res.ok) throw new Error(data?.error_description || "Refresh failed");
 
-    if (!res.ok) throw data;
+    const expiresInSec =
+      typeof data.expires_in === "number"
+        ? data.expires_in
+        : Number.parseInt(String(data.expires_in ?? "3600"), 10) || 3600;
 
     return {
       ...token,
-      accessToken: data.access_token,
-      accessTokenExpires: Date.now() + data.expires_in * 1000,
-      refreshToken: data.refresh_token ?? token.refreshToken,
+      accessToken: data.access_token as string,
+      accessTokenExpires: Date.now() + expiresInSec * 1000,
+      // Google sometimes doesn't return a new refresh token; keep the old one
+      refreshToken: (data.refresh_token as string | undefined) ?? token.refreshToken,
+      error: undefined,
     };
-  } catch (e) {
-    return { ...token, error: "RefreshAccessTokenError" as const };
+  } catch {
+    return { ...token, error: "RefreshAccessTokenError" };
   }
 }
 
 export const authOptions: NextAuthOptions = {
   providers: [
     GoogleProvider({
-      clientId: process.env.GOOGLE_CLIENT_ID!,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+      clientId: process.env.GOOGLE_CLIENT_ID || "",
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
       authorization: {
         url: GOOGLE_AUTHORIZATION_URL,
         params: {
@@ -50,7 +67,7 @@ export const authOptions: NextAuthOptions = {
             "profile",
             "https://www.googleapis.com/auth/analytics.readonly",
             "https://www.googleapis.com/auth/webmasters.readonly",
-            // Add when you ship GBP tile:
+            // Enable later when GBP tile ships:
             // "https://www.googleapis.com/auth/business.manage",
           ].join(" "),
         },
@@ -60,22 +77,36 @@ export const authOptions: NextAuthOptions = {
   session: { strategy: "jwt" },
   callbacks: {
     async jwt({ token, account }) {
+      const t = token as ExtendedToken;
+
       // Initial sign-in
       if (account) {
-        token.accessToken = account.access_token;
-        token.refreshToken = account.refresh_token;
-        token.accessTokenExpires = Date.now() + (account.expires_in ?? 3600) * 1000;
+        t.accessToken = account.access_token as string | undefined;
+        t.refreshToken = account.refresh_token as string | undefined;
+
+        const expiresInSec =
+          typeof account.expires_in === "number"
+            ? account.expires_in
+            : Number.parseInt(String(account.expires_in ?? "3600"), 10) || 3600;
+
+        // NOTE: the original error came from a malformed '??' sequence; this is safe and typed.
+        t.accessTokenExpires = Date.now() + expiresInSec * 1000;
+        return t;
       }
-      // Return previous token if still valid
-      if (token.accessToken && Date.now() < (token.accessTokenExpires as number)) {
-        return token;
+
+      // If token is still valid, return it
+      if (t.accessToken && typeof t.accessTokenExpires === "number" && Date.now() < t.accessTokenExpires) {
+        return t;
       }
-      // Refresh
-      return await refreshAccessToken(token);
+
+      // Otherwise, refresh it
+      return await refreshAccessToken(t);
     },
+
     async session({ session, token }) {
-      (session as any).accessToken = token.accessToken;
-      (session as any).error = token.error;
+      const t = token as ExtendedToken;
+      (session as any).accessToken = t.accessToken;
+      (session as any).error = t.error;
       return session;
     },
   },
