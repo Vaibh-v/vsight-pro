@@ -1,0 +1,60 @@
+datasource db { provider = "postgresql"; url = env("DATABASE_URL") }
+generator client { provider = "prisma-client-js" }
+
+model User {
+  id         String       @id @default(cuid())
+  email      String       @unique
+  name       String?
+  image      String?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+  connections Connection[]
+  snapshots   Snapshot[]
+  insights    Insight[]
+}
+
+model Connection {
+  id           String   @id @default(cuid())
+  user         User     @relation(fields: [userId], references: [id])
+  userId       String
+  provider     String   // 'google' | 'semrush' | 'clarity'
+  accessToken  String
+  refreshToken String?
+  expiresAt    DateTime?
+  scopes       String[]
+  status       String   // 'active' | 'revoked' | 'error'
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+enum SnapshotSource { GA4 GSC GBP SEMRUSH CLARITY }
+
+model Snapshot {
+  id        String         @id @default(cuid())
+  user      User           @relation(fields: [userId], references: [id])
+  userId    String
+  date      DateTime
+  source    SnapshotSource
+  entityId  String
+  metric    String
+  dimensions Json?
+  value     Float
+  createdAt DateTime @default(now())
+  @@index([userId, date, source, entityId])
+  @@index([userId, source, metric])
+}
+
+enum InsightType { TOP_COVERAGE MOVER GEO_GAP CRO_OPPORTUNITY }
+
+model Insight {
+  id        String      @id @default(cuid())
+  user      User        @relation(fields: [userId], references: [id])
+  userId    String
+  type      InsightType
+  severity  String
+  dateStart DateTime
+  dateEnd   DateTime
+  payload   Json
+  createdAt DateTime @default(now())
+  @@index([userId, type, dateStart, dateEnd])
+}
