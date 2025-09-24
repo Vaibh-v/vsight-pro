@@ -1,31 +1,18 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { getAccessToken, gaRunReport } from "@/lib/google";
+import { getAccessTokenOrThrow, ga4SessionsTimeseries, InputRangeSchema } from "@/lib/google";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== "GET") return res.status(405).end();
+
   try {
-    const { propertyId, start, end } = req.query;
-    if (!propertyId || !start || !end) {
-      return res.status(400).json({ error: "Missing propertyId/start/end" });
-    }
+    const token = await getAccessTokenOrThrow();
+    const { propertyId, start, end } = req.query as Record<string, string>;
+    if (!propertyId) return res.status(400).json({ error: "propertyId is required" });
+    InputRangeSchema.parse({ start, end });
 
-    const token = await getAccessToken(req);
-    if (!token) return res.status(401).json({ error: "No Google access token" });
-
-    const report = await gaRunReport(token, String(propertyId), {
-      dimensions: [{ name: "date" }],
-      metrics: [{ name: "sessions" }],
-      dateRanges: [{ startDate: String(start), endDate: String(end) }]
-    });
-
-    // flatten to a simple series
-    const points =
-      (report.rows ?? []).map((r: any) => ({
-        date: r.dimensionValues?.[0]?.value ?? "",
-        sessions: Number(r.metricValues?.[0]?.value ?? 0)
-      })) ?? [];
-
-    res.status(200).json({ points });
+    const data = await ga4SessionsTimeseries({ token, propertyId, start, end });
+    res.status(200).json(data);
   } catch (e: any) {
-    res.status(400).json({ error: e?.message ?? "GA traffic query failed" });
+    res.status(e.status || 500).json({ error: e.message || "GA traffic failed" });
   }
 }
