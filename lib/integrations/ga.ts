@@ -1,27 +1,22 @@
-import { google } from "googleapis";
-import type { AnalyticsDriver, DateRange, TrafficPoint } from "@/lib/contracts";
-import { OAuth2Client } from "google-auth-library";
+// /lib/integrations/ga.ts
+// Lightweight wrapper around our fetch-based GA4 helper.
+// No 'googleapis' or 'google-auth-library' required.
 
-export function gaDriver(accessToken: string): AnalyticsDriver {
-  const auth = new OAuth2Client();
-  auth.setCredentials({ access_token: accessToken });
-  const data = google.analyticsdata({ version: "v1beta", auth });
+import type { DateRange } from "@/lib/contracts"; // if this type doesn't exist in your repo, replace DateRange with `{ start: string; end: string }`
+import { getAccessTokenOrThrow, ga4SessionsTimeseries } from "@/lib/google";
 
+export type TrafficPoint = { date: string; sessions: number };
+
+export async function getTrafficSeries(propertyId: string, range: DateRange): Promise<{ points: TrafficPoint[]; total: number }> {
+  const token = await getAccessTokenOrThrow();
+  const { points, totalSessions } = await ga4SessionsTimeseries({
+    token,
+    propertyId,
+    start: range.start,
+    end: range.end,
+  });
   return {
-    async traffic(range: DateRange): Promise<TrafficPoint[]> {
-      // TODO: call data.properties.runReport with metrics: sessions/users, dims: date
-      // return live values. For now, stub:
-      return [
-        { date: range.start, sessions: 120 },
-        { date: range.end, sessions: 145 }
-      ];
-    },
-    async trafficByPage(range: DateRange): Promise<TrafficPoint[]> {
-      // TODO: GA4 by page
-      return [
-        { date: range.start, sessions: 40, pageViews: 80 },
-        { date: range.end, sessions: 60, pageViews: 110 }
-      ];
-    }
+    points: points.map(p => ({ date: p.date, sessions: p.sessions })),
+    total: totalSessions,
   };
 }
