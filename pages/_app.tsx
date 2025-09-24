@@ -1,9 +1,13 @@
 import type { AppProps } from "next/app";
 import { SessionProvider } from "next-auth/react";
+import "@/styles/globals.css"; // safe even if empty
 
-export default function App({ Component, pageProps }: AppProps) {
+export default function App({
+  Component,
+  pageProps: { session, ...pageProps },
+}: AppProps) {
   return (
-    <SessionProvider session={(pageProps as any)?.session}>
+    <SessionProvider session={session}>
       <Component {...pageProps} />
     </SessionProvider>
   );
