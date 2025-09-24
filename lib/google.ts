@@ -1,112 +1,96 @@
 // lib/google.ts
 import type { NextApiRequest } from "next";
 import { getToken } from "next-auth/jwt";
-import { google } from "googleapis";
 
-/** Pull the Google OAuth access token from the NextAuth session. */
-export async function getAccessToken(req: NextApiRequest): Promise<string> {
-  const tok = await getToken({ req });
-  const access = (tok as any)?.access_token as string | undefined;
-  if (!access) throw new Error("No Google token");
-  return access;
+/** Get Google access token from NextAuth session (server-side API routes). */
+export async function getAccessToken(req: NextApiRequest): Promise<string | null> {
+  const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
+  const access = (token as any)?.google_access_token as string | undefined;
+  return access ?? null;
 }
 
-/** Helper: build oauth2 client from an access token. */
-export function oauthFromAccessToken(accessToken: string) {
-  const oauth2 = new google.auth.OAuth2();
-  oauth2.setCredentials({ access_token: accessToken });
-  return oauth2;
+/** GA4 Admin: list properties with display names via accountSummaries. */
+export async function ga4ListProperties(accessToken: string) {
+  const resp = await fetch("https://analyticsadmin.googleapis.com/v1beta/accountSummaries", {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  if (!resp.ok) throw new Error(`GA Admin list failed: ${resp.status} ${await resp.text()}`);
+  const data = await resp.json();
+  const properties =
+    (data.accountSummaries ?? []).flatMap((acc: any) =>
+      (acc.propertySummaries ?? []).map((p: any) => ({
+        id: p.property,           // "properties/123456789"
+        displayName: p.displayName,
+        account: acc.name         // "accounts/12345"
+      }))
+    );
+  return properties;
 }
 
-/* ========================= GA4 ========================= */
-
-/** List GA4 properties the user can see (returns numeric IDs as strings). */
-export async function gaListProperties(req: NextApiRequest): Promise<string[]> {
-  const access = await getAccessToken(req);
-  const auth = oauthFromAccessToken(access);
-  const admin = google.analyticsadmin({ version: "v1beta", auth });
-
-  const out: string[] = [];
-  let pageToken: string | undefined;
-
-  do {
-    const { data } = await admin.properties.list({
-      pageSize: 200,
-      filter: "parent:accounts/-", // any account the user has
-      pageToken,
-    });
-    (data.properties ?? []).forEach((p) => {
-      // property.name looks like "properties/123456789"
-      const id = p.name?.split("/")[1];
-      if (id) out.push(id);
-    });
-    pageToken = data.nextPageToken ?? undefined;
-  } while (pageToken);
-
-  return out;
-}
-
-/** Run a GA4 report for a property (thin wrapper around runReport). */
+/** GA4 Data API: runReport wrapper. requestBody matches GA4 schema. */
 export async function gaRunReport(
-  req: NextApiRequest,
-  propertyId: string,
-  body: {
-    dimensions?: { name: string }[];
-    metrics?: { name: string }[];
-    dateRanges?: { startDate: string; endDate: string }[];
-    dimensionFilter?: any;
-    metricFilter?: any;
-    limit?: string;
-    orderBys?: any[];
-  }
+  accessToken: string,
+  property: string,              // "properties/123456789" (or numeric id; we'll normalize)
+  requestBody: Record<string, any>
 ) {
-  const access = await getAccessToken(req);
-  const auth = oauthFromAccessToken(access);
-  const analytics = google.analyticsdata({ version: "v1beta", auth });
-
-  const { data } = await analytics.properties.runReport({
-    property: `properties/${propertyId}`,
-    requestBody: body,
+  const normalized = property.startsWith("properties/") ? property : `properties/${property}`;
+  const url = `https://analyticsdata.googleapis.com/v1beta/${encodeURIComponent(normalized)}:runReport`;
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify(requestBody)
   });
-  return data;
+  if (!resp.ok) throw new Error(`GA runReport failed: ${resp.status} ${await resp.text()}`);
+  return resp.json();
 }
 
-/* ========================= GSC (Search Console) ========================= */
-
-/** List Search Console sites the user has verified access to. */
-export async function gscListSites(req: NextApiRequest): Promise<string[]> {
-  const access = await getAccessToken(req);
-  const auth = oauthFromAccessToken(access);
-  const webmasters = google.webmasters({ version: "v3", auth });
-
-  const { data } = await webmasters.sites.list();
-  const entries = data.siteEntry ?? [];
-  // Filter out unverified
-  return entries
-    .filter((e) => e.permissionLevel && e.permissionLevel !== "siteUnverifiedUser")
-    .map((e) => String(e.siteUrl));
+/** GSC: list sites for the account. */
+export async function gscListSites(accessToken: string) {
+  const resp = await fetch("https://www.googleapis.com/webmasters/v3/sites/list", {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  if (!resp.ok) throw new Error(`GSC site list failed: ${resp.status} ${await resp.text()}`);
+  const data = await resp.json();
+  return data.siteEntry ?? [];
 }
 
-/** Query GSC search analytics (simple daily rows). */
-export async function gscQuery(
-  req: NextApiRequest,
+/** GSC: query keywords (Search Analytics) for a site. */
+export async function gscQueryKeywords(
+  accessToken: string,
   siteUrl: string,
-  startDate: string,
-  endDate: string
+  start: string,
+  end: string,
+  rowLimit = 250
 ) {
-  const access = await getAccessToken(req);
-  const auth = oauthFromAccessToken(access);
-  const webmasters = google.webmasters({ version: "v3", auth });
-
-  const { data } = await webmasters.searchanalytics.query({
-    siteUrl,
-    requestBody: {
-      startDate,
-      endDate,
-      dimensions: ["date", "query"],
-      rowLimit: 250,
-    },
+  const url = `https://searchconsole.googleapis.com/webmasters/v3/sites/${encodeURIComponent(siteUrl)}/searchAnalytics/query`;
+  const body = {
+    startDate: start,
+    endDate: end,
+    dimensions: ["query"],
+    rowLimit
+  };
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body)
   });
+  if (!resp.ok) throw new Error(`GSC query failed: ${resp.status} ${await resp.text()}`);
+  return resp.json();
+}
 
-  return data;
+/** Temporary stub so `gbp/insights` never breaks builds while we wire the API. */
+export function gbpStubInsights() {
+  return {
+    rows: [
+      {
+        date: "2025-09-15",
+        viewsSearch: 220,
+        viewsMaps: 180,
+        calls: 5,
+        directions: 9,
+        websiteClicks: 14,
+        topQueries: ["plumber", "emergency plumber", "leak repair"]
+      }
+    ]
+  };
 }
