@@ -16,7 +16,8 @@
     "@prisma/client": "^6.16.0",
     "zod": "^3.23.8",
     "react-chartjs-2": "^5.2.0",
-    "chart.js": "^4.4.3"
+    "chart.js": "^4.4.3",
+    "swr": "^2.2.5"
   },
   "devDependencies": {
     "typescript": "^5.4.0",
