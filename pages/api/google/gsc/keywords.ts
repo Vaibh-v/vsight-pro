@@ -1,23 +1,26 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { getAccessToken, gscQueryKeywords } from "@/lib/google";
+import { getAccessTokenOrThrow, gscQuery, InputRangeSchema } from "@/lib/google";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== "GET") return res.status(405).end();
+
   try {
-    const { siteUrl, start, end, rowLimit } = req.query;
-    if (!siteUrl || !start || !end) return res.status(400).json({ error: "Missing siteUrl/start/end" });
+    const token = await getAccessTokenOrThrow();
+    const { siteUrl, start, end, country = "ALL", page } = req.query as Record<string, string>;
+    if (!siteUrl) return res.status(400).json({ error: "siteUrl is required" });
+    InputRangeSchema.parse({ start, end });
 
-    const token = await getAccessToken(req);
-    if (!token) return res.status(401).json({ error: "No Google access token" });
-
-    const data = await gscQueryKeywords(
+    const rows = await gscQuery({
       token,
-      String(siteUrl),
-      String(start),
-      String(end),
-      rowLimit ? Number(rowLimit) : 250
-    );
-    res.status(200).json({ rows: data.rows ?? [] });
+      siteUrl,
+      start,
+      end,
+      country,
+      pagePath: page,
+    });
+
+    res.status(200).json({ rows });
   } catch (e: any) {
-    res.status(400).json({ error: e?.message ?? "GSC keyword query failed" });
+    res.status(e?.status || 500).json({ error: e?.message || "GSC keywords failed" });
   }
 }
