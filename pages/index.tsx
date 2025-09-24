@@ -3,11 +3,10 @@ import Header from "@/components/Header";
 import { DateRange } from "@/components/DateRange";
 import { Dropdown } from "@/components/Dropdown";
 import { Sparkline } from "@/components/Chart";
-// ✅ Use named import (matches your component file)
 import { InsightsCards } from "@/components/InsightsCards";
 import { useSession } from "next-auth/react";
 
-// Minimal fetch hook to keep deps light
+// Minimal fetch hook (no swr)
 function useFetch<T = any>(key: string | null) {
   const [data, setData] = React.useState<T | undefined>();
   const [error, setError] = React.useState<any>();
@@ -39,7 +38,7 @@ function useFetch<T = any>(key: string | null) {
 }
 
 export default function Home() {
-  const { status } = useSession(); // APIs enforce auth; this is UX only
+  const { status } = useSession(); // UX only; APIs enforce auth
   const [ga4PropertyId, setGa4PropertyId] = React.useState<string | undefined>();
   const [gscSiteUrl, setGscSiteUrl] = React.useState<string | undefined>();
   const [range, setRange] = React.useState<{ start: string; end: string }>({
@@ -72,7 +71,13 @@ export default function Home() {
 
       <div className="flex flex-wrap items-center gap-3">
         <span>Start</span>
-        <DateRange value={range} onChange={setRange} />
+        {/* ✅ DateRange expects start/end/onStart/onEnd */}
+        <DateRange
+          start={range.start}
+          end={range.end}
+          onStart={(v: string) => setRange((r) => ({ ...r, start: v }))}
+          onEnd={(v: string) => setRange((r) => ({ ...r, end: v }))}
+        />
         <Dropdown
           label="GA4 Property"
           value={ga4PropertyId}
