@@ -1,104 +1,113 @@
 import type { NextApiRequest } from "next";
 import { getToken } from "next-auth/jwt";
 
-type GoogleJWT = {
-  accessToken?: string;
-  refreshToken?: string;
-  accessTokenExpires?: number;
-};
+const ANALYTICS_ADMIN = "https://analyticsadmin.googleapis.com/v1beta";
+const ANALYTICS_DATA = "https://analyticsdata.googleapis.com/v1beta";
+const GSC = "https://www.googleapis.com/webmasters/v3";
 
-export async function getAccessToken(req: NextApiRequest): Promise<string> {
-  const secret = process.env.NEXTAUTH_SECRET;
-  if (!secret) throw new Error("NEXTAUTH_SECRET missing");
-
-  const token = (await getToken({ req, secret })) as GoogleJWT | null;
-  if (!token?.accessToken) throw new Error("Not authenticated with Google");
-
-  const now = Date.now();
-  if (token.accessTokenExpires && now < token.accessTokenExpires - 30_000) {
-    return token.accessToken;
-    // NOTE: we skip refresh to reduce moving parts.
-  }
-  return token.accessToken;
+/** Pull access token from the NextAuth JWT cookie for API routes */
+export async function getAccessTokenOrThrow(req: NextApiRequest): Promise<string> {
+  const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
+  const at = (token as any)?.accessToken as string | undefined;
+  if (!at) throw new Error("Not authenticated. Sign in again.");
+  return at;
 }
 
-// Back-compat alias used by some files
-export const getAccessTokenOrThrow = getAccessToken;
-
-async function googleGet<T>(req: NextApiRequest, url: string): Promise<T> {
-  const accessToken = await getAccessToken(req);
-  const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-  if (!r.ok) throw new Error(`Google API ${r.status} - ${url}`);
-  return (await r.json()) as T;
-}
-
-async function googlePostJson<T>(req: NextApiRequest, url: string, body: any): Promise<T> {
-  const accessToken = await getAccessToken(req);
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body)
+/** GA4: List properties by using account summaries (simplest way). */
+export async function listGA4Properties(token: string): Promise<Array<{ id: string; name: string }>> {
+  const r = await fetch(`${ANALYTICS_ADMIN}/accountSummaries`, {
+    headers: { Authorization: `Bearer ${token}` }
   });
-  if (!r.ok) throw new Error(`Google API ${r.status} - ${url}`);
-  return (await r.json()) as T;
+  if (!r.ok) throw new Error(`GA Admin error: ${r.status}`);
+  const json = await r.json();
+  const items: Array<{ id: string; name: string }> = [];
+  (json.accountSummaries ?? []).forEach((acc: any) => {
+    (acc.propertySummaries ?? []).forEach((p: any) => {
+      items.push({ id: (p.property as string).replace("properties/", ""), name: p.displayName });
+    });
+  });
+  return items;
 }
 
-/** GA4: Admin list of properties */
-export async function listGA4Properties(
-  req: NextApiRequest
-): Promise<Array<{ id: string; name: string }>> {
-  type AdminResp = {
-    accountSummaries?: Array<{
-      propertySummaries?: Array<{ property?: string; displayName?: string }>;
-    }>;
-  };
-  const data = await googleGet<AdminResp>(req, "https://analyticsadmin.googleapis.com/v1beta/accountSummaries");
-  const out: Array<{ id: string; name: string }> = [];
-  for (const acc of data.accountSummaries ?? []) {
-    for (const p of acc.propertySummaries ?? []) {
-      const id = (p.property || "").split("/")[1] || "";
-      if (id) out.push({ id, name: p.displayName || `Property ${id}` });
-    }
-  }
-  return out;
-}
-
-/** GA4: runReport sessions by date */
-export async function ga4SessionsTimeseries(
-  req: NextApiRequest,
-  propertyId: string,
-  start: string,
-  end: string
-): Promise<{ points: Array<{ date: string; sessions: number }>; totalSessions: number }> {
-  type RunReportResp = {
-    rows?: Array<{ dimensionValues?: Array<{ value?: string }>; metricValues?: Array<{ value?: string }> }>;
-  };
-  const url = `https://analyticsdata.googleapis.com/v1beta/properties/${encodeURIComponent(propertyId)}:runReport`;
+/** GA4: Sessions timeseries by date */
+export async function ga4SessionsTimeseries(opts: {
+  token: string;
+  propertyId: string;
+  start: string; // YYYY-MM-DD
+  end: string;   // YYYY-MM-DD
+}): Promise<{ points: Array<{ date: string; value: number }>; totalSessions: number }> {
+  const { token, propertyId, start, end } = opts;
+  const url = `${ANALYTICS_DATA}/properties/${encodeURIComponent(propertyId)}:runReport`;
   const body = {
     dateRanges: [{ startDate: start, endDate: end }],
     metrics: [{ name: "sessions" }],
-    dimensions: [{ name: "date" }]
+    dimensions: [{ name: "date" }],
+    keepEmptyRows: false
   };
-  const data = await googlePostJson<RunReportResp>(req, url, body);
-
-  const points: Array<{ date: string; sessions: number }> = [];
-  let total = 0;
-  for (const row of data.rows ?? []) {
-    const d = row.dimensionValues?.[0]?.value || "";
-    const vRaw = row.metricValues?.[0]?.value || "0";
-    const v = Number(vRaw);
-    total += isNaN(v) ? 0 : v;
-    const date = d.length === 8 ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : d;
-    points.push({ date, sessions: isNaN(v) ? 0 : v });
-  }
-  return { points, totalSessions: total };
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) throw new Error(`GA Data error: ${r.status}`);
+  const json = await r.json();
+  const rows = json.rows ?? [];
+  const points = rows.map((row: any) => {
+    const d = row.dimensionValues?.[0]?.value as string; // yyyymmdd
+    const iso = `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+    const v = Number(row.metricValues?.[0]?.value ?? 0);
+    return { date: iso, value: v };
+  });
+  const totalSessions =
+    Number(json.totals?.[0]?.metricValues?.[0]?.value ?? 0) ||
+    points.reduce((s: number, p: any) => s + (p.value || 0), 0);
+  return { points, totalSessions };
 }
 
-/** GSC: list verified sites */
-export async function listGscSites(
-  req: NextApiRequest
-): Promise<Array<{ siteUrl: string; permissionLevel: string }>> {
-  type SitesResp = { siteEntry?: Array<{ siteUrl: string; permissionLevel: string }> };
-  const data = await googleGet<SitesResp>(req, "https://www.googleapis.com/webmasters/v3/sites");
-  return (data.siteEntry ?? []).map(s => ({ siteUrl: s.siteUrl, permissionLevel: s.permissionLevel }));
+/** GSC: list verified sites for the user */
+export async function listGscSites(token: string): Promise<Array<{ siteUrl: string; permissionLevel: string }>> {
+  const r = await fetch(`${GSC}/sites`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!r.ok) throw new Error(`GSC list error: ${r.status}`);
+  const json = await r.json();
+  const out = (json.siteEntry ?? []).map((s: any) => ({
+    siteUrl: s.siteUrl as string,
+    permissionLevel: s.permissionLevel as string
+  }));
+  // Filter to "siteRestrictedUser" and above? MVP: return all.
+  return out;
+}
+
+/** GSC: query keywords (dimensions: query) */
+export async function gscQueryKeywords(opts: {
+  token: string;
+  siteUrl: string;
+  start: string;
+  end: string;
+}): Promise<
+  Array<{ query: string; clicks: number; impressions: number; ctr: number; position: number }>
+> {
+  const { token, siteUrl, start, end } = opts;
+  const url = `${GSC}/sites/${encodeURIComponent(siteUrl)}/searchAnalytics/query`;
+  const body = {
+    startDate: start,
+    endDate: end,
+    dimensions: ["query"],
+    rowLimit: 25000
+  };
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) throw new Error(`GSC query error: ${r.status}`);
+  const json = await r.json();
+  const rows =
+    (json.rows ?? []).map((row: any) => ({
+      query: row.keys?.[0] ?? "",
+      clicks: Number(row.clicks ?? 0),
+      impressions: Number(row.impressions ?? 0),
+      ctr: Number(row.ctr ?? 0),
+      position: Number(row.position ?? 0)
+    })) ?? [];
+  return rows;
 }
