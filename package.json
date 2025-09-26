@@ -3,23 +3,30 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build": "next build",
     "dev": "next dev -p 3000",
+    "build": "next build",
     "start": "next start -p 3000",
-    "lint": "next lint"
+    "lint": "next lint",
+    "prisma:generate": "prisma generate"
   },
   "engines": {
     "node": "22.x"
   },
   "dependencies": {
+    "@prisma/client": "5.19.1",
     "next": "14.2.4",
+    "next-auth": "4.24.7",
     "react": "18.3.1",
-    "react-dom": "18.3.1",
-    "next-auth": "4.24.7"
+    "react-dom": "18.3.1"
   },
   "devDependencies": {
+    "prisma": "5.19.1",
     "typescript": "5.5.4",
     "@types/node": "20.14.9",
     "@types/react": "18.2.66"
-  }
+  },
+  "packageManager": "npm@10.8.1",
+  "overrides": {},
+  "pnpm": {},
+  "postinstall": "prisma generate"
 }
