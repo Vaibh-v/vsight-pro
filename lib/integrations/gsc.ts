@@ -1,30 +1,30 @@
-// lib/integrations/gsc.ts
-// MVP stub for Google Search Console (GSC) so builds pass.
-// Replace with real GSC queries once it's integrated.
+// Minimal GSC integration (list sites; keywords later)
+import type { NextApiRequest } from "next";
+import type { DateRange } from "@/lib/contracts";
+import { listGscSites as _list } from "@/lib/google";
 
-import { getAccessTokenOrThrow } from "@/lib/google";
-import type { DateRange, GscKeywordRow } from "@/lib/contracts";
+export type GscSite = { siteUrl: string; permissionLevel: string };
+export type GscKeywordRow = {
+  date?: string;
+  query?: string;
+  page?: string;
+  clicks?: number;
+  impressions?: number;
+  ctr?: number;
+  position?: number;
+  country?: string;
+};
 
-// Stub: Query GSC for data, return empty set in v1. Replace with real data fetching in Sprint 2.
-export async function gscQuery(
-  _req: any, // Placeholder for actual request object
+export async function listGscSites(req: NextApiRequest): Promise<GscSite[]> {
+  return _list(req);
+}
+
+// Stub for keywords (returns empty for now)
+export async function gscQueryKeywords(
+  _req: NextApiRequest,
   _siteUrl: string,
   _start: string,
   _end: string
 ): Promise<GscKeywordRow[]> {
   return [];
-}
-
-// Stub: Get list of GSC sites, return empty set in v1. Replace with real data fetching in Sprint 2.
-export async function listGscSites(_req: any): Promise<string[]> {
-  return [];
-}
-
-// Stub: Get GSC insights (e.g., query performance)
-export async function gscGetInsights(
-  _req: any, 
-  _siteUrl: string,
-  _range: DateRange
-): Promise<{ rows: GscKeywordRow[] }> {
-  return { rows: [] };
 }
