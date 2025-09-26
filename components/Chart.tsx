@@ -1,29 +1,24 @@
 import * as React from "react";
 
-export function Sparkline({ points }: { points: Array<{ date: string; value: number }> }) {
-  if (!points?.length) return <div style={{ height: 80, color: "#888" }}>No data</div>;
+export type SparkPoint = { date: string; value: number };
 
-  const w = 560;
-  const h = 100;
-  const pad = 8;
-  const xs = points.map((_, i) => i);
-  const ys = points.map((p) => p.value);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-  const spanY = maxY - minY || 1;
-  const maxX = xs.length - 1 || 1;
-
-  const path = xs
-    .map((x, idx) => {
-      const px = pad + (x / maxX) * (w - pad * 2);
-      const py = pad + (1 - (ys[idx] - minY) / spanY) * (h - pad * 2);
-      return `${idx === 0 ? "M" : "L"}${px},${py}`;
-    })
-    .join(" ");
-
+export function Sparkline({ points, loading = false }: { points: SparkPoint[]; loading?: boolean }) {
+  // Minimal, dependency-free fallback render. You can wire a real chart later.
+  if (loading) {
+    return <div className="w-full h-24 animate-pulse bg-gray-100 rounded" />;
+  }
+  const total = points.reduce((s, p) => s + (Number.isFinite(p.value) ? p.value : 0), 0);
   return (
-    <svg width={w} height={h} style={{ display: "block" }}>
-      <path d={path} fill="none" stroke="#0ea5e9" strokeWidth={2} />
-    </svg>
+    <div className="w-full border rounded p-3 text-sm">
+      <div className="mb-1">Total: {total}</div>
+      <div className="grid grid-cols-4 gap-2">
+        {points.slice(-8).map((p) => (
+          <div key={p.date} className="text-[10px] text-gray-600">
+            <div className="font-medium">{p.value}</div>
+            <div>{p.date}</div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
