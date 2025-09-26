@@ -1,52 +1,44 @@
-import NextAuth, { NextAuthOptions } from "next-auth";
+import type { NextApiRequest, NextApiResponse } from "next";
+import NextAuth, { type NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
 
+/**
+ * Requires these env vars in Vercel:
+ * - GOOGLE_CLIENT_ID
+ * - GOOGLE_CLIENT_SECRET
+ * - NEXTAUTH_URL
+ * - NEXTAUTH_SECRET
+ */
 export const authOptions: NextAuthOptions = {
-  session: { strategy: "jwt" },
   providers: [
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID || "",
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
-      authorization: {
-        params: {
-          scope: [
-            "openid",
-            "email",
-            "profile",
-            "https://www.googleapis.com/auth/analytics.readonly",
-            "https://www.googleapis.com/auth/webmasters.readonly"
-          ].join(" ")
-        }
-      }
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET || ""
     })
   ],
+  secret: process.env.NEXTAUTH_SECRET,
+  session: { strategy: "jwt" },
   callbacks: {
     async jwt({ token, account }) {
-      if (account) {
-        token.accessToken = (account as any).access_token;
-        token.refreshToken = (account as any).refresh_token;
-        const exp = (account as any).expires_at; // seconds since epoch
-        // Fallback: 1h from now if Google didn't return expires_at
-        token.accessTokenExpires =
-          (typeof exp === "number" ? exp * 1000 : Date.now() + 3600 * 1000);
+      // Initial sign-in
+      if (account?.access_token) token.accessToken = account.access_token;
+      if (account?.refresh_token) token.refreshToken = account.refresh_token;
+      if (typeof account?.expires_in === "number") {
+        token.accessTokenExpires = Date.now() + account.expires_in * 1000;
+      } else if (!token.accessTokenExpires) {
+        token.accessTokenExpires = Date.now() + 3600 * 1000; // default 1h
       }
-      // if token exists & not expired, return as-is
-      if (token.accessToken && Date.now() < (token.accessTokenExpires as number)) {
-        return token;
-      }
-      // NOTE: To keep this MVP simple, we don't implement refresh here.
-      // If expired, let routes fail with 401 so the user can re-login.
       return token;
     },
     async session({ session, token }) {
       (session as any).accessToken = token.accessToken;
+      (session as any).accessTokenExpires = token.accessTokenExpires;
+      (session as any).refreshToken = token.refreshToken;
       return session;
     }
-  },
-  pages: {
-    signIn: "/"
-  },
-  secret: process.env.NEXTAUTH_SECRET
+  }
 };
 
-export default NextAuth(authOptions);
+export default function auth(req: NextApiRequest, res: NextApiResponse) {
+  return NextAuth(req, res, authOptions);
+}
