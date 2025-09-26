@@ -1,14 +1,12 @@
 {
+  "functions": {
+    "api/**": { "runtime": "nodejs22.x" }
+  },
+  "buildCommand": "npm run build",
   "crons": [
     {
       "path": "/api/jobs/daily-pull",
       "schedule": "0 5 * * *"
     }
   ]
-}
-{
-  "functions": {
-    "api/**": { "runtime": "nodejs22.x" }
-  },
-  "buildCommand": "npm run build"
 }
