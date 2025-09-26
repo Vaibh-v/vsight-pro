@@ -1,20 +1,21 @@
 import type { NextApiRequest } from "next";
-import type { DateRange, GscKeywordRow } from "@/lib/google";
-import { gscListSites, gscQueryKeywords } from "@/lib/google";
+import { getAccessTokenOrThrow, gscListSites, gscQueryKeywords } from "@/lib/google";
 
-export type GscSite = { siteUrl: string; permissionLevel?: string };
+export type DateRange = { start: string; end: string };
 
-export async function listGscSites(req: NextApiRequest): Promise<GscSite[]> {
-  return gscListSites(req);
+export async function listGscSites(req: NextApiRequest) {
+  const token = getAccessTokenOrThrow(req);
+  return gscListSites(token);
 }
 
-export async function queryGscKeywordsAdapter(
-  req: NextApiRequest,
-  siteUrl: string,
-  range: DateRange
-): Promise<{ rows: GscKeywordRow[] }> {
-  return gscQueryKeywords(req, siteUrl, range);
+/** Reads `siteUrl`, `start`, `end` from req.query and returns keyword rows */
+export async function queryGscKeywords(req: NextApiRequest) {
+  const token = getAccessTokenOrThrow(req);
+  const siteUrl = String(req.query.siteUrl || "");
+  const start = String(req.query.start || "");
+  const end = String(req.query.end || "");
+  if (!siteUrl || !start || !end) {
+    throw new Error("Missing siteUrl/start/end");
+  }
+  return gscQueryKeywords({ token, siteUrl, start, end });
 }
-
-// Back-compat name so existing imports like `gscQueryKeywords` keep working.
-export { queryGscKeywordsAdapter as queryGscKeywords };
