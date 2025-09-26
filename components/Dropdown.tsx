@@ -1,22 +1,21 @@
-import React from "react";
+import * as React from "react";
 
 export type Option = { label: string; value: string };
 
-type Props = {
+export function Dropdown(props: {
   label: string;
   options: Option[];
   value?: string;
   onChange: (v: string) => void;
-};
-
-export function Dropdown({ label, options, value, onChange }: Props) {
+}) {
+  const { label, options, value, onChange } = props;
   return (
-    <label className="flex items-center gap-2">
-      <span className="text-sm">{label}</span>
+    <label style={{ display: "inline-flex", flexDirection: "column", gap: 6 }}>
+      <span style={{ fontSize: 12, color: "#555" }}>{label}</span>
       <select
-        className="border rounded px-2 py-1"
-        value={value || ""}
+        value={value ?? ""}
         onChange={(e) => onChange(e.target.value)}
+        style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #ddd", minWidth: 240 }}
       >
         <option value="" disabled>
           Select…
