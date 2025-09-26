@@ -1,23 +1,26 @@
 // lib/integrations/gsc.ts
-// Thin wrappers over lib/google to keep import names stable across the app.
-
 import type { NextApiRequest } from "next";
+import type { DateRange, GscSite, GscKeywordRow } from "@/lib/google";
 import {
-  gscListSites as _gscListSites,
-  gscQueryKeywords as _gscQueryKeywords,
-  type DateRange, // exported for consumers that reference it
+  getAccessTokenOrThrow,
+  gscListSites as _listSites,
+  gscQueryKeywords as _queryKeywords,
 } from "@/lib/google";
 
-export type { DateRange } from "@/lib/google";
-
-export async function gscListSites(req: NextApiRequest) {
-  return _gscListSites(req);
+export async function listGscSites(req: NextApiRequest): Promise<GscSite[]> {
+  const token = getAccessTokenOrThrow(req);
+  return _listSites(token);
 }
 
-// Provide a stable name used by API routes/pages.
-export async function gscQueryKeywords(
+export async function queryGscKeywords(
   req: NextApiRequest,
-  params?: { siteUrl?: string; start?: string; end?: string }
-) {
-  return _gscQueryKeywords(req, params);
+  minImpressions: number = 10
+): Promise<GscKeywordRow[]> {
+  const token = getAccessTokenOrThrow(req);
+  const siteUrl = String(req.query.siteUrl ?? "").trim();
+  const start = String(req.query.start ?? "").trim();
+  const end = String(req.query.end ?? "").trim();
+  if (!siteUrl) throw new Error("Missing siteUrl");
+  const range: DateRange = { start, end };
+  return _queryKeywords({ token, siteUrl, range, minImpressions });
 }
