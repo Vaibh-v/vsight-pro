@@ -3,93 +3,163 @@ import { useSession, signIn, signOut } from "next-auth/react";
 import { DateRange } from "@/components/DateRange";
 import { Dropdown, type Option } from "@/components/Dropdown";
 import { Sparkline } from "@/components/Chart";
-import InsightsCards, { type InsightCard } from "@/components/InsightsCards";
+import { InsightsCards, type InsightCard } from "@/components/InsightsCards";
 
-type GaPropsResp = { items: { id: string; name: string }[] };
-type GscSitesResp = { items: { siteUrl: string; permissionLevel: string }[] };
-type GaTrafficResp = { points: { date: string; sessions: number }[]; totalSessions: number };
-
-function iso(daysAgo: number) {
+function todayMinus(days: number) {
   const d = new Date();
-  d.setDate(d.getDate() - daysAgo);
+  d.setUTCDate(d.getUTCDate() - days);
   return d.toISOString().slice(0, 10);
 }
 
 export default function Home() {
   const { data: session, status } = useSession();
-  const authed = status === "authenticated";
+  const [start, setStart] = React.useState(todayMinus(28));
+  const [end, setEnd] = React.useState(todayMinus(1));
 
-  const [start, setStart] = React.useState(iso(28));
-  const [end, setEnd] = React.useState(iso(1));
-
-  const [gaOptions, setGaOptions] = React.useState<Option[]>([]);
+  const [ga4Options, setGa4Options] = React.useState<Option[]>([]);
   const [gscOptions, setGscOptions] = React.useState<Option[]>([]);
-  const [ga4PropertyId, setGa4PropertyId] = React.useState("");
-  const [gscSiteUrl, setGscSiteUrl] = React.useState("");
+  const [ga4PropertyId, setGa4PropertyId] = React.useState<string>("");
+  const [gscSiteUrl, setGscSiteUrl] = React.useState<string>("");
 
-  const [sparkPoints, setSparkPoints] = React.useState<{ date: string; value: number }[]>([]);
-  const [insights, setInsights] = React.useState<InsightCard[]>([]);
+  const [traffic, setTraffic] = React.useState<Array<{ date: string; value: number }>>([]);
+  const [keywords, setKeywords] = React.useState<Array<{ query: string; clicks: number; impressions: number; ctr: number; position: number }>>(
+    []
+  );
 
-  // Load entities after auth
   React.useEffect(() => {
-    if (!authed) return;
+    if (status !== "authenticated") return;
     (async () => {
-      const propsRes = await fetch("/api/google/ga4/properties").then(r => r.json() as Promise<GaPropsResp>);
-      setGaOptions((propsRes.items || []).map(p => ({ label: p.name, value: p.id })));
-      const sitesRes = await fetch("/api/google/gsc/sites").then(r => r.json() as Promise<GscSitesResp>);
-      setGscOptions((sitesRes.items || []).map(s => ({ label: s.siteUrl, value: s.siteUrl })));
-    })();
-  }, [authed]);
+      // GA4 properties
+      try {
+        const r = await fetch("/api/google/ga4/properties");
+        const json = await r.json();
+        const opts: Option[] = (json.items ?? []).map((p: any) => ({ label: p.name, value: p.id }));
+        setGa4Options(opts);
+      } catch {}
 
-  // Load GA4 traffic when property selected
-  React.useEffect(() => {
-    if (!authed || !ga4PropertyId || !start || !end) return;
-    (async () => {
-      const qs = new URLSearchParams({ propertyId: ga4PropertyId, start, end });
-      const data = await fetch(`/api/ga/traffic?${qs}`).then(r => r.json() as Promise<GaTrafficResp>);
-      const points = (data.points || []).map(p => ({ date: p.date, value: p.sessions }));
-      setSparkPoints(points);
+      // GSC sites
+      try {
+        const r = await fetch("/api/google/gsc/sites");
+        const json = await r.json();
+        const opts: Option[] = (json.items ?? []).map((s: any) => ({ label: s.siteUrl, value: s.siteUrl }));
+        setGscOptions(opts);
+      } catch {}
     })();
-  }, [authed, ga4PropertyId, start, end]);
+  }, [status]);
+
+  React.useEffect(() => {
+    if (!ga4PropertyId || status !== "authenticated") return;
+    (async () => {
+      try {
+        const r = await fetch(`/api/ga/traffic?propertyId=${encodeURIComponent(ga4PropertyId)}&start=${start}&end=${end}`);
+        const json = await r.json();
+        setTraffic(json.points ?? []);
+      } catch {
+        setTraffic([]);
+      }
+    })();
+  }, [ga4PropertyId, start, end, status]);
+
+  React.useEffect(() => {
+    if (!gscSiteUrl || status !== "authenticated") return;
+    (async () => {
+      try {
+        const r = await fetch(`/api/google/gsc/keywords?siteUrl=${encodeURIComponent(gscSiteUrl)}&start=${start}&end=${end}`);
+        const json = await r.json();
+        setKeywords(json.rows ?? []);
+      } catch {
+        setKeywords([]);
+      }
+    })();
+  }, [gscSiteUrl, start, end, status]);
+
+  const insights: InsightCard[] = React.useMemo(() => {
+    const movers = [...keywords]
+      .sort((a, b) => b.clicks - a.clicks)
+      .slice(0, 3)
+      .map((r) => `“${r.query}” (${Math.round(r.position)} avg pos, ${r.clicks} clicks)`)
+      .join("; ");
+    const items: InsightCard[] = [];
+    if (traffic.length) {
+      const total = traffic.reduce((s, p) => s + p.value, 0);
+      items.push({ title: "Traffic trend", body: `Sessions over period: ${total.toLocaleString()}`, severity: "info" });
+    }
+    if (movers) {
+      items.push({ title: "Top movers (GSC)", body: movers, severity: "action" });
+    }
+    return items;
+  }, [traffic, keywords]);
 
   return (
-    <div className="max-w-4xl mx-auto p-6 space-y-6">
-      <header className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">VSight Pro — Local SEO Cockpit</h1>
-        {authed ? (
-          <button className="border rounded px-3 py-1" onClick={() => signOut()}>Sign out</button>
+    <div style={{ maxWidth: 1100, margin: "40px auto", padding: "0 16px" }}>
+      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+        <h1 style={{ fontSize: 20, fontWeight: 700 }}>VSight Pro — Local SEO Cockpit</h1>
+        {status === "authenticated" ? (
+          <button onClick={() => signOut()} style={{ padding: "8px 12px", borderRadius: 8, border: "1px solid #ddd" }}>
+            Sign out
+          </button>
         ) : (
-          <button className="border rounded px-3 py-1" onClick={() => signIn("google")}>Sign in with Google</button>
+          <button onClick={() => signIn("google")} style={{ padding: "8px 12px", borderRadius: 8, border: "1px solid #ddd" }}>
+            Sign in with Google
+          </button>
         )}
       </header>
 
-      {!authed && (
-        <div className="text-sm text-gray-600">
-          Please sign in with Google to connect GA4 & GSC.
-        </div>
-      )}
-
-      {authed && (
+      {status !== "authenticated" ? (
+        <div>Please sign in to connect GA4 & GSC.</div>
+      ) : (
         <>
-          <div className="flex flex-wrap items-center gap-4">
-            <DateRange start={start} end={end} onStart={setStart} onEnd={setEnd} />
-            <Dropdown label="GA4 Property" options={gaOptions} value={ga4PropertyId} onChange={setGa4PropertyId} />
-            <Dropdown label="GSC Site" options={gscOptions} value={gscSiteUrl} onChange={setGscSiteUrl} />
-          </div>
-
-          <div className="grid gap-4">
-            <div className="p-4 border rounded-xl">
-              <h3 className="font-medium mb-2">Traffic (sessions)</h3>
-              <Sparkline points={sparkPoints} />
-              {!ga4PropertyId && <div className="text-xs mt-2 text-gray-500">Select a GA4 property</div>}
+          <section style={{ display: "grid", gap: 16, gridTemplateColumns: "1fr" }}>
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+              <DateRange start={start} end={end} onStart={setStart} onEnd={setEnd} />
+              <Dropdown label="GA4 Property" options={ga4Options} value={ga4PropertyId} onChange={setGa4PropertyId} />
+              <Dropdown label="GSC Site" options={gscOptions} value={gscSiteUrl} onChange={setGscSiteUrl} />
             </div>
 
-            <div className="p-4 border rounded-xl">
-              <h3 className="font-medium mb-2">Insights</h3>
+            <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
+              <h3 style={{ margin: "0 0 8px 0" }}>Traffic (sessions)</h3>
+              <Sparkline points={traffic} />
+              {!ga4PropertyId && <div style={{ fontSize: 12, color: "#666" }}>Select a GA4 property</div>}
+            </div>
+
+            <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
+              <h3 style={{ margin: "0 0 8px 0" }}>Insights</h3>
               <InsightsCards items={insights} />
-              <div className="text-xs text-gray-500 mt-2">Insights engine to be enabled after GSC keywords/coverage.</div>
             </div>
-          </div>
+
+            <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
+              <h3 style={{ margin: "0 0 8px 12px" }}>Top keywords</h3>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr>
+                      {["Query", "Clicks", "Impressions", "CTR", "Position"].map((h) => (
+                        <th key={h} style={{ textAlign: "left", padding: 8, borderBottom: "1px solid #eee" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {keywords.slice(0, 50).map((r, i) => (
+                      <tr key={i}>
+                        <td style={{ padding: 8, borderBottom: "1px solid #f5f5f5" }}>{r.query}</td>
+                        <td style={{ padding: 8, borderBottom: "1px solid #f5f5f5" }}>{r.clicks}</td>
+                        <td style={{ padding: 8, borderBottom: "1px solid #f5f5f5" }}>{r.impressions}</td>
+                        <td style={{ padding: 8, borderBottom: "1px solid #f5f5f5" }}>
+                          {(r.ctr * 100).toFixed(2)}%
+                        </td>
+                        <td style={{ padding: 8, borderBottom: "1px solid #f5f5f5" }}>
+                          {r.position.toFixed(1)}
+                        </td>
+                      </tr>
+                    ))}
+                    {!gscSiteUrl && (
+                      <tr><td colSpan={5} style={{ padding: 8, color: "#666" }}>Select a GSC site</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
         </>
       )}
     </div>
