@@ -1,15 +1,21 @@
-import React from "react";
+import * as React from "react";
 
-export type InsightCard = { title: string; body?: string; severity?: "info" | "warn" | "action" };
+export type InsightCard = {
+  title: string;
+  body: string;
+  severity: "info" | "warn" | "action";
+};
 
-export default function InsightsCards({ items }: { items: InsightCard[] }) {
-  if (!items?.length) return <div className="text-xs text-gray-500">No insights yet.</div>;
+export function InsightsCards({ items }: { items: InsightCard[] }) {
+  if (!items?.length) return <div style={{ color: "#666" }}>No insights yet.</div>;
+  const color = (s: InsightCard["severity"]) =>
+    s === "action" ? "#0ea5e9" : s === "warn" ? "#f59e0b" : "#64748b";
   return (
-    <div className="grid gap-3">
+    <div style={{ display: "grid", gap: 12 }}>
       {items.map((it, i) => (
-        <div key={i} className="border rounded p-3">
-          <div className="font-medium">{it.title}</div>
-          {it.body && <div className="text-sm mt-1">{it.body}</div>}
+        <div key={i} style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12 }}>
+          <div style={{ fontWeight: 600, color: color(it.severity) }}>{it.title}</div>
+          <div style={{ fontSize: 14, marginTop: 6 }}>{it.body}</div>
         </div>
       ))}
     </div>
