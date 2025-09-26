@@ -1,32 +1,38 @@
+// components/InsightsCards.tsx
 import * as React from "react";
 
-export type InsightCard = { title: string; body?: string; severity?: "info" | "warn" | "error" };
+type InsightCard = { title: string; body?: string; severity?: "low" | "med" | "high" };
 
 type Props =
-  | { items: InsightCard[] }
-  | { start?: string; end?: string; ga4PropertyId?: string; gscSiteUrl?: string };
+  | { items: InsightCard[]; start?: never; end?: never; ga4PropertyId?: never; gscSiteUrl?: never }
+  | { items?: never; start: string; end: string; ga4PropertyId?: string; gscSiteUrl?: string };
 
-export function InsightsCards(props: Props) {
-  if ("items" in props) {
-    const items = props.items ?? [];
-    if (!items.length) return <div className="text-xs text-gray-500">No insights yet.</div>;
-    return (
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {items.map((i, idx) => (
-          <div key={idx} className="border rounded p-3">
-            <div className="font-medium">{i.title}</div>
-            {i.body && <div className="text-sm mt-1">{i.body}</div>}
-          </div>
-        ))}
-      </div>
-    );
-  }
-  // Accept filter-like props without breaking the build:
+function InsightsCardsComponent(props: Props) {
+  const [items, setItems] = React.useState<InsightCard[]>(
+    "items" in props && props.items ? props.items : []
+  );
+
+  React.useEffect(() => {
+    if ("items" in props && props.items) {
+      setItems(props.items);
+      return;
+    }
+    setItems([]); // placeholder until insights API is wired
+  }, [("items" in props) ? JSON.stringify(props.items) : `${props.start}-${props.end}-${props.ga4PropertyId}-${props.gscSiteUrl}`]);
+
+  if (!items.length) return <div className="text-sm text-gray-500">No insights yet.</div>;
+
   return (
-    <div className="text-xs text-gray-500">
-      Insights will appear here once data is available for the selected range & sources.
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+      {items.map((it, i) => (
+        <div key={i} className="border rounded-xl p-3">
+          <div className="text-sm font-medium">{it.title}</div>
+          {it.body && <div className="text-sm text-gray-600 mt-1">{it.body}</div>}
+        </div>
+      ))}
     </div>
   );
 }
 
-export default InsightsCards;
+export { InsightsCardsComponent as InsightsCards };
+export default InsightsCardsComponent;
