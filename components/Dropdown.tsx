@@ -1,73 +1,61 @@
+// components/Dropdown.tsx
 import * as React from "react";
-
 export type Option = { label: string; value: string };
 
-type BaseProps = {
-  label: string;
-  value?: string;
-  onChange: (v: string) => void;
-};
+type Props =
+  | {
+      label: string;
+      value?: string;
+      onChange: (v: string) => void;
+      options: Option[];
+      source?: never;
+      map?: never;
+    }
+  | {
+      label: string;
+      value?: string;
+      onChange: (v: string) => void;
+      options?: never;
+      source: string;
+      map?: (json: any) => Option[];
+    };
 
-type PropsWithOptions = BaseProps & {
-  options: Option[];
-  source?: never;
-  map?: never;
-};
-
-type PropsWithSource = BaseProps & {
-  options?: never;
-  source: string; // GET endpoint returning { items: Option[] } or any json + map
-  map?: (json: any) => Option[];
-};
-
-type Props = PropsWithOptions | PropsWithSource;
-
-export function Dropdown(props: Props) {
+function Dropdown(props: Props) {
   const [opts, setOpts] = React.useState<Option[]>("options" in props ? props.options : []);
-  const [loading, setLoading] = React.useState(false);
+  const [loading, setLoading] = React.useState<boolean>(false);
 
   React.useEffect(() => {
-    let alive = true;
-    async function load() {
-      if (!("source" in props)) return;
+    if ("source" in props) {
+      let alive = true;
       setLoading(true);
-      try {
-        const r = await fetch(props.source);
-        const json = await r.json();
-        if (!alive) return;
-        if ("map" in props && typeof props.map === "function") {
-          setOpts(props.map(json));
-        } else if (json && Array.isArray(json.items)) {
-          // default shape { items: [{label, value}] }
-          setOpts(json.items);
-        } else if (Array.isArray(json)) {
-          // allow raw arrays
-          setOpts(json);
-        } else {
-          setOpts([]);
-        }
-      } catch {
-        if (alive) setOpts([]);
-      } finally {
-        if (alive) setLoading(false);
-      }
+      fetch(props.source, { credentials: "include" })
+        .then((r) => r.json())
+        .then((json) => {
+          if (!alive) return;
+          if (props.map) setOpts(props.map(json));
+          else if (Array.isArray(json?.items)) setOpts(json.items as Option[]);
+          else setOpts([]);
+        })
+        .catch(() => setOpts([]))
+        .finally(() => setLoading(false));
+      return () => {
+        alive = false;
+      };
     }
-    load();
-    return () => {
-      alive = false;
-    };
-  }, [("source" in props) ? props.source : undefined]);
+  }, [("source" in props) ? props.source : ""]);
 
   return (
-    <label className="text-sm flex items-center gap-2">
-      <span className="whitespace-nowrap">{props.label}</span>
+    <label className="flex items-center gap-2">
+      <span className="text-sm text-gray-600">{props.label}</span>
       <select
-        className="border rounded p-2 text-sm min-w-[220px]"
+        className="border rounded-md px-2 py-1"
         value={props.value ?? ""}
         onChange={(e) => props.onChange(e.target.value)}
         disabled={loading}
       >
-        <option value="">{loading ? "Loading..." : "Select..."}</option>
+        <option value="" disabled>
+          {loading ? "Loading..." : "Select..."}
+        </option>
         {opts.map((o) => (
           <option key={o.value} value={o.value}>
             {o.label}
@@ -77,3 +65,5 @@ export function Dropdown(props: Props) {
     </label>
   );
 }
+export default Dropdown;
+export { Dropdown };
