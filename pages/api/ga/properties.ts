@@ -1,3 +1,4 @@
+// pages/api/ga/properties.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { gaListProperties } from "@/lib/integrations/ga";
 
