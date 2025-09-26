@@ -1,281 +1,156 @@
-// lib/google.ts
-// Lightweight Google helpers using fetch + NextAuth JWT. No 'googleapis' package needed.
+// Lightweight Google helpers using fetch only (no googleapis).
+// We obtain OAuth access tokens from the client request (Authorization: Bearer <token>)
+// as issued by NextAuth Google provider. You can also place the token in a cookie named
+// "ga_token" or "gsc_token" as a fallback if you want.
 
 import type { NextApiRequest } from "next";
-import { getToken } from "next-auth/jwt";
-
-/* ===========================
-   Shared tiny types
-=========================== */
 
 export type DateRange = { start: string; end: string };
 
-export type Ga4Property = { id: string; name: string };
-export type GscSite = { siteUrl: string; permissionLevel?: string };
+// ---- Access token helpers ---------------------------------------------------
 
-export type GscKeywordRow = {
-  date?: string;
-  query?: string;
-  page?: string;
-  country?: string;
-  clicks: number;
-  impressions: number;
-  ctr?: number;
-  position?: number;
-};
-
-export type TrafficPoint = { date: string; sessions: number };
-
-/* ======================================================
-   Minimal "schema" to avoid adding zod to your build
-   - keeps existing imports like `InputRangeSchema.parse(...)` working
-====================================================== */
-export const InputRangeSchema = {
-  parse(q: any): { start: string; end: string } {
-    if (!q || !q.start || !q.end) {
-      throw new Error("Missing 'start' or 'end'");
-    }
-    const start = String(q.start);
-    const end = String(q.end);
-    // naive guard (YYYY-MM-DD)
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
-      throw new Error("Dates must be YYYY-MM-DD");
-    }
-    return { start, end };
-  },
-};
-
-/* ===========================
-   Auth helper
-=========================== */
-
-export async function getAccessTokenOrThrow(req: NextApiRequest): Promise<string> {
-  // 1) Honor explicit Bearer header (useful for testing/curl)
-  const auth = req.headers.authorization;
-  if (auth?.startsWith("Bearer ")) {
-    const token = auth.slice(7).trim();
-    if (token) return token;
-  }
-
-  // 2) Pull NextAuth JWT (requires NEXTAUTH_SECRET set in env)
-  const jwt = await getToken({ req });
-  const accessToken = (jwt as any)?.accessToken as string | undefined;
-
-  if (!accessToken) {
-    throw new Error("Not authenticated with Google (no accessToken). Sign in again.");
-  }
-  return accessToken;
+export function readBearerFromReq(req: NextApiRequest): string | undefined {
+  const h = req.headers.authorization;
+  if (typeof h === "string" && h.startsWith("Bearer ")) return h.slice(7).trim();
+  // Fallbacks (optional): look in cookies
+  const cookie = req.headers.cookie ?? "";
+  const cookieMap = Object.fromEntries(cookie.split(";").map(s => s.trim().split("=").map(decodeURIComponent)).filter(a => a.length === 2));
+  return cookieMap["ga_token"] || cookieMap["gsc_token"];
 }
 
-/* ===========================
-   Low-level fetch wrapper
-=========================== */
-
-async function gfetch<T>(url: string, token: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    ...init,
-    headers: {
-      ...(init?.headers || {}),
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`Google API ${res.status}: ${body || res.statusText}`);
-  }
-  return (await res.json()) as T;
+export function getAccessToken(req: NextApiRequest): string | undefined {
+  return readBearerFromReq(req);
 }
 
-/* ===========================
-   GA4 — list properties
-   Endpoint: account summaries (v1beta)
-   https://analyticsadmin.googleapis.com/v1beta/accountSummaries
-   Scope: https://www.googleapis.com/auth/analytics.readonly
-=========================== */
+export function getAccessTokenOrThrow(req: NextApiRequest): string {
+  const t = getAccessToken(req);
+  if (!t) throw new Error("Missing Google OAuth access token. Ensure the client sends Authorization: Bearer <token> after signing in.");
+  return t;
+}
 
-export async function listGA4Properties(token: string): Promise<Ga4Property[]> {
-  type AccountSummariesResp = {
-    accountSummaries?: Array<{
-      name: string; // accounts/1234
-      displayName?: string;
-      propertySummaries?: Array<{
-        property: string; // properties/XXXXXX
-        displayName?: string;
-      }>;
-    }>;
-    nextPageToken?: string;
-  };
+// ---- GA4 (Admin + Data) -----------------------------------------------------
 
-  const items: Ga4Property[] = [];
-  let pageToken: string | undefined = undefined;
+export type Option = { label: string; value: string };
 
+// Lists GA4 properties the user can access (via Account Summaries)
+export async function listGA4Properties(req: NextApiRequest): Promise<Option[]> {
+  const token = getAccessTokenOrThrow(req);
+  const url = "https://analyticsadmin.googleapis.com/v1beta/accountSummaries";
+  const out: Option[] = [];
+
+  // Paginate just in case
+  let nextPageToken: string | undefined = undefined;
   do {
-    const url = new URL("https://analyticsadmin.googleapis.com/v1beta/accountSummaries");
-    if (pageToken) url.searchParams.set("pageToken", pageToken);
-    const data = await gfetch<AccountSummariesResp>(url.toString(), token);
-    data.accountSummaries?.forEach((acct) => {
-      acct.propertySummaries?.forEach((p) => {
-        const id = p.property.replace("properties/", "");
-        items.push({ id, name: p.displayName || id });
-      });
+    const resp = await fetch(nextPageToken ? `${url}?pageToken=${encodeURIComponent(nextPageToken)}` : url, {
+      headers: { Authorization: `Bearer ${token}` },
     });
-    pageToken = data.nextPageToken;
-  } while (pageToken);
+    if (!resp.ok) throw new Error(`GA Admin API failed: ${resp.status} ${await resp.text()}`);
+    const json = await resp.json();
+    const items: any[] = json.accountSummaries ?? [];
+    for (const a of items) {
+      const props: any[] = a.propertySummaries ?? [];
+      for (const p of props) {
+        out.push({ label: `${p.displayName} (${p.property})`, value: p.property });
+      }
+    }
+    nextPageToken = json.nextPageToken;
+  } while (nextPageToken);
 
-  // de-dup (just in case)
-  const uniq = new Map<string, Ga4Property>();
-  for (const it of items) uniq.set(it.id, it);
-  return Array.from(uniq.values());
+  return out;
 }
 
-/* ===========================
-   GA4 — sessions timeseries
-   Endpoint: runReport (v1beta)
-   https://analyticsdata.googleapis.com/v1beta/properties/{pid}:runReport
-   Scope: analytics.readonly
-=========================== */
+export type TrafficPoint = { date: string; value: number };
 
-export async function ga4SessionsTimeseries(args: {
-  token: string;
-  propertyId: string;
-  start: string;
-  end: string;
-}): Promise<{ points: TrafficPoint[]; totalSessions: number }> {
-  const { token, propertyId, start, end } = args;
-
-  type RunReportResp = {
-    rows?: Array<{ dimensionValues?: Array<{ value?: string }>; metricValues?: Array<{ value?: string }> }>;
-    totals?: Array<{ metricValues?: Array<{ value?: string }> }>;
-  };
-
-  const url = `https://analyticsdata.googleapis.com/v1beta/properties/${encodeURIComponent(
-    propertyId
-  )}:runReport`;
+export async function ga4SessionsTimeseries(
+  req: NextApiRequest,
+  propertyId: string,
+  range: DateRange
+): Promise<{ points: TrafficPoint[]; totalSessions: number }> {
+  const token = getAccessTokenOrThrow(req);
+  const url = `https://analyticsdata.googleapis.com/v1beta/${propertyId}:runReport`;
 
   const body = {
-    dateRanges: [{ startDate: start, endDate: end }],
-    dimensions: [{ name: "date" }],
+    dateRanges: [{ startDate: range.start, endDate: range.end }],
     metrics: [{ name: "sessions" }],
-    keepEmptyRows: false,
+    dimensions: [{ name: "date" }],
   };
 
-  const data = await gfetch<RunReportResp>(url, token, { method: "POST", body: JSON.stringify(body) });
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw new Error(`GA4 Data API failed: ${resp.status} ${await resp.text()}`);
+  const json = await resp.json();
 
-  const points: TrafficPoint[] =
-    data.rows?.map((r) => ({
-      date: r.dimensionValues?.[0]?.value || "",
-      sessions: Number(r.metricValues?.[0]?.value || 0),
-    })) || [];
+  const rows: any[] = json.rows ?? [];
+  const points: TrafficPoint[] = rows.map((r) => ({
+    date: (r.dimensionValues?.[0]?.value as string) ?? "",
+    value: Number(r.metricValues?.[0]?.value ?? "0"),
+  }));
 
-  const totalSessions = Number(data.totals?.[0]?.metricValues?.[0]?.value || 0);
-
+  const totalSessions = points.reduce((s, p) => s + (Number.isFinite(p.value) ? p.value : 0), 0);
   return { points, totalSessions };
 }
 
-/* ===========================
-   GSC — list sites
-   Endpoint: https://www.googleapis.com/webmasters/v3/sites/list
-   Scope: webmasters.readonly
-=========================== */
+// ---- Google Search Console --------------------------------------------------
 
-export async function listGscSites(token: string): Promise<GscSite[]> {
-  type Resp = { siteEntry?: Array<{ siteUrl: string; permissionLevel?: string }> };
-  const data = await gfetch<Resp>("https://www.googleapis.com/webmasters/v3/sites/list", token);
-  return (data.siteEntry || []).map((s) => ({ siteUrl: s.siteUrl, permissionLevel: s.permissionLevel }));
+export type GscSite = { siteUrl: string; permissionLevel?: string };
+
+export async function gscListSites(req: NextApiRequest): Promise<GscSite[]> {
+  const token = getAccessTokenOrThrow(req);
+  const url = "https://www.googleapis.com/webmasters/v3/sites/list";
+  const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!resp.ok) throw new Error(`GSC sites list failed: ${resp.status} ${await resp.text()}`);
+  const json = await resp.json();
+  const items: any[] = json.siteEntry ?? [];
+  return items.map((s) => ({ siteUrl: s.siteUrl, permissionLevel: s.permissionLevel }));
 }
 
-/* ===========================
-   GSC — search analytics query
-   Endpoint: POST {siteUrl}/searchAnalytics/query
-   Scope: webmasters.readonly
-=========================== */
+export type GscKeywordRow = { query: string; clicks: number; impressions: number; ctr: number; position: number };
 
-export async function gscQuery(args: {
-  token: string;
-  siteUrl: string;
-  start: string;
-  end: string;
-  country?: string; // e.g., "US" | "ALL"
-  page?: string;
-}): Promise<{ rows: GscKeywordRow[] }> {
-  const { token, siteUrl, start, end, country, page } = args;
+export async function gscQueryKeywords(
+  req: NextApiRequest,
+  siteUrl: string,
+  range: DateRange
+): Promise<{ rows: GscKeywordRow[] }> {
+  const token = getAccessTokenOrThrow(req);
+  const url = `https://www.googleapis.com/webmasters/v3/sites/${encodeURIComponent(siteUrl)}/searchAnalytics/query`;
 
-  const dims = ["query", "page", "date"]; // include date for timeseries views
-  const dimensionFilterGroups: any[] = [];
-
-  // Country filter (Search Console uses COUNTRY dimension filter)
-  if (country && country !== "ALL") {
-    dimensionFilterGroups.push({
-      groupType: "and",
-      filters: [{ dimension: "country", operator: "equals", expression: country }],
-    });
-  }
-
-  // Page filter (optional)
-  if (page) {
-    dimensionFilterGroups.push({
-      groupType: "and",
-      filters: [{ dimension: "page", operator: "equals", expression: page }],
-    });
-  }
-
-  const url = `https://searchconsole.googleapis.com/webmasters/v3/sites/${encodeURIComponent(
-    siteUrl
-  )}/searchAnalytics/query`;
-
-  const body: any = {
-    startDate: start,
-    endDate: end,
-    dimensions: dims,
-    rowLimit: 25000, // generous; Sitemaps limit is higher but API caps apply
+  const body = {
+    startDate: range.start,
+    endDate: range.end,
+    dimensions: ["query"],
+    rowLimit: 1000,
   };
 
-  if (dimensionFilterGroups.length) {
-    body.dimensionFilterGroups = dimensionFilterGroups;
-  }
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw new Error(`GSC keywords query failed: ${resp.status} ${await resp.text()}`);
 
-  type Row = { keys?: string[]; clicks?: number; impressions?: number; ctr?: number; position?: number };
-  type Resp = { rows?: Row[] };
+  const json = await resp.json();
+  const rows: any[] = json.rows ?? [];
+  const out: GscKeywordRow[] = rows.map((r) => ({
+    query: String((r.keys ?? [])[0] ?? ""),
+    clicks: Number(r.clicks ?? 0),
+    impressions: Number(r.impressions ?? 0),
+    ctr: Number(r.ctr ?? 0),
+    position: Number(r.position ?? 0),
+  }));
 
-  const data = await gfetch<Resp>(url, token, { method: "POST", body: JSON.stringify(body) });
-
-  const rows: GscKeywordRow[] =
-    data.rows?.map((r) => {
-      const [queryV = "", pageV = "", dateV = ""] = r.keys || [];
-      return {
-        query: queryV,
-        page: pageV,
-        date: dateV,
-        clicks: Number(r.clicks || 0),
-        impressions: Number(r.impressions || 0),
-        ctr: Number(r.ctr || 0),
-        position: Number(r.position || 0),
-      };
-    }) || [];
-
-  return { rows };
+  return { rows: out };
 }
 
-/* ===========================
-   GBP — insights (safe stub)
-   If you haven't enabled the GBP Performance API yet,
-   we return an empty dataset to keep the UI stable.
-   Scope (when you enable): https://www.googleapis.com/auth/business.manage
-=========================== */
-
-export async function gbpInsights(args: {
-  token: string;
-  locationId: string; // locations/{id}
-  start: string;
-  end: string;
-}): Promise<{ rows: Array<{ date: string; calls?: number; directions?: number; websiteClicks?: number }> }> {
-  const { token, locationId, start, end } = args;
-
-  // If you want real data later, switch to:
-  // const url = `https://businessprofileperformance.googleapis.com/v1/${locationId}:fetchMultiDailyMetricsTimeSeries`
-  // and pass metrics + timeRange per API docs. For now, return empty rows.
-
-  void token; void locationId; void start; void end;
+// ---- GBP placeholder (safe no-op) ------------------------------------------
+// Export a harmless placeholder so imports won't break. Replace later if needed.
+export async function gbpInsights(): Promise<{ rows: any[] }> {
   return { rows: [] };
 }
+
+// Back-compat aliases if older code imports these names:
+export { listGA4Properties as gaListProperties };
+export { gscListSites as listGscSites };
+export { gscQueryKeywords as queryGsc };
